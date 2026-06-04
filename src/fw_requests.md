@@ -73,3 +73,9 @@
 3. build more granular locations within buildings
 
 ## Consolidate WIP Cans
+
+# Priorities
+
+0. Fix inventory consumptions to use actual vs requested
+1. WIP & Finished Goods Record Structure
+2. Syncing WIP & FG into WB
