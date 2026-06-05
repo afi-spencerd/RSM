@@ -57,6 +57,12 @@
 
 ## Improve Receiving POs on QC End
 
+## Allow Positive Inventory Adjustments
+
+### Questions
+
+- If the adjustment exceeds the amount received on the PO, how to reconcile?
+
 # FW Fixes
 
 ## Not Auto-Marking Received Line
