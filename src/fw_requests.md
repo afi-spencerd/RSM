@@ -1,6 +1,8 @@
 # FW Requests
 
-## Cycle Count Tool
+## Features
+
+### Cycle Count Tool
 
 - freeze snapshot of RM
 - track full cycle count list
@@ -8,35 +10,35 @@
 - auto class adjustments with `Cycle Count ${count_date}`
 - select location (building or granular) to count
 
-### Count Fast-Movers More Frequently
+#### Count Fast-Movers More Frequently
 
 > More likely that the fast-movers are what's wrong.
 
-## Separate RMs & Semi-finished Goods?
+### Separate RMs & Semi-finished Goods?
 
 - Separate WIP Items in FW & QB
 
-## Pricing Averages for RMs
+### Pricing Averages for RMs
 
-## Validate Received Inventory's Weight
+### Validate Received Inventory's Weight
 
 - scan
 - weigh on scale
 - use standard tare
 
-## Flexible Container Assignment
+### Flexible Container Assignment
 
 - enforce container & pack-off line start
 
-## Scrapping Packaging Inventory
+### Scrapping Packaging Inventory
 
-## Auto-set Adjustment Date
+### Auto-set Adjustment Date
 
 - don't allow the user to select the date
 
-## Simplify Adjustment Functionality
+### Simplify Adjustment Functionality
 
-## "Consume" RMs When Moved into Stations / R&D
+### "Consume" RMs When Moved into Stations / R&D
 
 - LOT traceability lost when moved into Station
 - Only consume out of station
@@ -46,41 +48,41 @@
 
 > RMS refers to this process as "WIP Account"
 
-## Sub-locations
+### Sub-locations
 
 - used for more granular cycle counts
 - improve receiving process
 
-## Only Allow Receiving at "Docks"
+### Only Allow Receiving at "Docks"
 
-## Only Ship from "Docks"
+### Only Ship from "Docks"
 
-## Improve Receiving POs on QC End
+### Improve Receiving POs on QC End
 
-## Allow Positive Inventory Adjustments
+### Allow Positive Inventory Adjustments
 
-### Questions
+#### Questions
 
 - If the adjustment exceeds the amount received on the PO, how to reconcile?
 
-# FW Fixes
+## FW Fixes
 
-## Not Auto-Marking Received Line
+### Not Auto-Marking Received Line
 
-## Broken Packaging Links in Packaging Inventory
+### Broken Packaging Links in Packaging Inventory
 
-# FW Projects
+## FW Projects
 
-## Location Clean-up
+### Location Clean-up
 
 1. eliminate all locations
 2. create minimal locations
   - one location for each building
 3. build more granular locations within buildings
 
-## Consolidate WIP Cans
+### Consolidate WIP Cans
 
-# Priorities
+## Priorities
 
 0. Fix inventory consumptions to use actual vs requested
 1. WIP & Finished Goods Record Structure
