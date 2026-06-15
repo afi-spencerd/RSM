@@ -88,10 +88,18 @@ title: Proposal
 erDiagram
   InventoryTx {
     int      id   PK
-    int      lot  FK
-    int      from FK
-    int      to   FK
+    int      lot_id FK
+    int      from_location_id FK "NULL"
+    int      to_location_id   FK "NULL"
     decimal  qty
+    datetime created_at
+    varchar  kind
+
+  }
+  Lot {
+    int      id
+    varchar  code
+    varchar  kind "('FG', 'RM', 'WIP')"
     datetime created_at
   }
   whorderdetail {
@@ -99,14 +107,15 @@ erDiagram
     float QtyReceived
   }
   StorageLocation
-  InventoryTx }o--|| StorageLocation : "InventoryTx.to :: StorageLocation.StorageLocationID"
-  InventoryTx }o--|| StorageLocation : "InventoryTx.from :: StorageLocation.StorageLocationID"
-  whorderdetail ||--|{ InventoryTx : "whorderdetail.WHOrderDetailID :: InventoryTx.lot"
+  InventoryTx }o--|| StorageLocation : "InventoryTx.to_location_id :: StorageLocation.StorageLocationID"
+  InventoryTx }o--|| StorageLocation : "InventoryTx.from_location_id :: StorageLocation.StorageLocationID"
+  whorderdetail ||--|{ InventoryTx : "whorderdetail.WHOrderDetailID :: InventoryTx.lot_id"
+  InventoryTx }|--|| Lot : "InventoryTx.lot_id :: Lot.id"
 ```
 
 ```mermaid
 ---
-title: Transaction Flow
+title: Receiving to Inventory
 ---
 flowchart TB
   start((Start))
@@ -115,53 +124,59 @@ flowchart TB
   unorder_rm("User unsets 'ordered' in PO.")
   tx_unorder_rm["Write from Vendor to null to tx table."]
   rm_arrive("RM arrives at Receiving dock.")
-  tx_rm_arrive["Write from Vendor to 'receiving' to tx table."]
+  tx_rm_arrive["Write from Vendor to 'Receiving' to tx table."]
   is_qc_pass{RM passes QC?}
   return_rm("RM is returned to Vendor.")
-  tx_return_rm(["Write from Receiving to Vendor to tx table."])
-  tx_receive_rm["Write from Receiving to \[building_location_id\] in tx table."]
+  tx_return_rm(["Write from 'Receiving' to 'Vendor' to tx table."])
+  tx_receive_rm["Write from 'Receiving' to \[building_location_id\] in tx table."]
+  rm_in_inventory((("RM in Inventory")))
+
+  start --> order_rm --> tx_order_rm -->|optional| unorder_rm --> tx_unorder_rm --> order_rm
+                         tx_order_rm --> rm_arrive --> tx_rm_arrive --> is_qc_pass -->|no| return_rm --> tx_return_rm
+                                                                        is_qc_pass -->|yes| tx_receive_rm --> rm_in_inventory
+```
+
+```mermaid
+---
+title: Manipulate Raw Material Inventory
+---
+flowchart TB
+  rm_in_inventory(("RM in Inventory"))
   adjust_inventory_negative("User applies negative inventory adjustment.")
   tx_adjust_inventory_negative["Write from \[building_location_id\] to Scrap in tx table."]
   adjust_inventory_positive("User applies positive inventory adjustment.")
   tx_adjust_inventory_positive["Write from null to \[building_location_id\] in tx table."]
   relocate_rm("User relocates RM.")
-  tx_relocate_rm["Write from \[building_location_id\] to \[building_location_id\] to tx table."]
-  rm_in_inventory(("RM in Inventory"))
+  tx_relocate_rm["Write from \[building_location_id\] to \[building_location_id\] in tx table."]
   wip_rm("Move RM into WIP.")
   tx_wip_rm["Write from \[building_location_id\] to WIP in tx table."]
+  cast_rm_to_wip["Change Lot \`kind\` to WIP"]
+  lot_in_wip((("LOT in WIP")))
+
+  rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative --> rm_in_inventory
+  rm_in_inventory -->|optional| adjust_inventory_positive --> tx_adjust_inventory_positive --> rm_in_inventory
+  rm_in_inventory -->|optional| relocate_rm --> tx_relocate_rm --> rm_in_inventory
+  rm_in_inventory --> wip_rm --> tx_wip_rm --> cast_rm_to_wip --> lot_in_wip
+```
+
+```mermaid
+---
+title: Manipulate WIP
+---
+flowchart TB
+  A@{ shape: brace-r, label: "To adjust WIP positive, adjust inventory then move to WIP"}
+  lot_in_wip(("LOT in WIP"))
   consume_rm("RM consumed in Compounder Tool.")
-  tx_consume_rm(["Write from WIP to FG in tx table."])
+  tx_consume_rm["Write from WIP to FG in tx table."]
   scrap_wip_rm("Scrap RM from WIP.")
   tx_scrap_wip_rm(["Write from WIP to Scrap in tx table."])
+  pack_fg("Packer packs FG.")
+  create_fg["Create FG Lot in \`Lot\` table."]
+  tx_create_fg["Write from WIP to FG in \`InventoryTx\` table against new FG LOT."]
+  fg_in_inventory((("FG in Inventory.")))
 
-  start --> order_rm
-  order_rm --> tx_order_rm
-  tx_order_rm -->|optional| unorder_rm
-  unorder_rm --> tx_unorder_rm
-  tx_unorder_rm --> order_rm
-  tx_order_rm --> rm_arrive
-  rm_arrive --> tx_rm_arrive
-  tx_rm_arrive --> is_qc_pass
-  is_qc_pass -->|no| return_rm
-  return_rm --> tx_return_rm
-  is_qc_pass -->|yes| tx_receive_rm
-  tx_receive_rm --> rm_in_inventory
-  rm_in_inventory -->|optional| adjust_inventory_negative
-  adjust_inventory_negative --> tx_adjust_inventory_negative
-  tx_adjust_inventory_negative --> rm_in_inventory
-  rm_in_inventory -->|optional| adjust_inventory_positive
-  adjust_inventory_positive --> tx_adjust_inventory_positive
-  tx_adjust_inventory_positive --> rm_in_inventory
-  rm_in_inventory -->|optional| relocate_rm
-  relocate_rm --> tx_relocate_rm
-  tx_relocate_rm --> rm_in_inventory
-  rm_in_inventory --> wip_rm
-  wip_rm --> tx_wip_rm
-  tx_wip_rm -->|optional| scrap_wip_rm
-  scrap_wip_rm --> tx_scrap_wip_rm
-  tx_wip_rm --> consume_rm
-  consume_rm --> tx_consume_rm
-
+  lot_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
+  lot_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> create_fg --> tx_create_fg --> fg_in_inventory
 ```
 
 ### Special Locations
@@ -173,12 +188,23 @@ flowchart TB
 - Shipping
 - Scrap
 
-## Requirements
+## Goals
 
-- Single source of truth
-- Transactions for **all** RM and FG movements
-- net-0 tables
-- minimal tool breakage
+- [x] Single Source of Truth
+
+> Accomplished with InventoryTx table for both RMs & FGs w/ views.
+
+- [x] Transactions for **all** RM & FG movements
+
+> `InventoryTx` and `Lot` tables accommodate this.
+
+- [x] Net-0 tables
+
+> Using views (old::new): 16:11
+
+- [x] Minimal Tool Breakage
+
+> Views with matching interface to replaced tables will reduce breakage. Will still require populating `InventoryTx` table to match current state.
 
 ## Notes
 
@@ -188,15 +214,21 @@ flowchart TB
 > [!TIP]
 > Pours should generate `Consumptions` against the RM (possibly using the Command/Event pattern), and those consumptions should be applied against the WIP inventory in FIFO order _after_ the pour is completed.
 
-> [!CAUTION]
+> [!IMPORTANT]
 > RSM wants to use `InventoryTx` table for **both** Raw Materials and Finished Goods.
+
+> [!TIP]
+> CoPilot recommends a `Lot` table in order to track both Raw Materials and Finished Goods within the `InventoryTx` table. To enable tracking both RM LOTs (`int`) and FG LOTs (`varchar`), it recommends having a `kind` enum column and cast all LOT codes to `varchar` in the `Lot` table. _When accessing the table, row `kind` should **always** be checked._
 
 > [!IMPORTANT]
 > RSM wants to replace `formula_stock_lot_adjustment`, `WHPrepStockDetail`, `whprep_StorageLocation_Lot`, `whorderdetail`, `whprepdetail_qtydetail`, and `multi_StorageLocation` with views against `InventoryTx` table as interfaces to prevent tool breakage.
+
 
 ## Questions
 
 - Why is the current system tying pours directly to LOT numbers for consumption?
   - Floor is incapable of truly following FIFO.
 - Why does the system require a specific LOT assignment at time of `Start Prep`?
-- If using `to` and `from` columns on `Tx` table, what type?
+
+> [!WARNING]
+> When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
