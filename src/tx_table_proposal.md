@@ -4,7 +4,7 @@
 
 ```mermaid
 ---
-title: Current Layout
+title: "Current Schema"
 ---
 erDiagram
   ordertbl
@@ -83,34 +83,46 @@ erDiagram
 
 ```mermaid
 ---
-title: Schema
+title: "Proposed Schema"
 ---
 erDiagram
   InventoryTx {
-    int      id   PK
+    int      tx_id  PK
     int      lot_id FK
     int      from_location_id FK "NULL"
     int      to_location_id   FK "NULL"
     decimal  qty
     datetime created_at
-    varchar  kind
-
+    varchar  kind "('RECEIPT', 'MOVE', 'CONSUMPTION', 'ADJUSTMENT', 'PRODUCTION', 'SCRAP')"
+  }
+  Item {
+    int      item_id PK
+    varchar  kind "('RM', 'FG')"
+    int      rm_id FK "NULL"
+    int      fg_id FK "NULL"
   }
   Lot {
-    int      id
-    varchar  code
-    varchar  kind "('FG', 'RM', 'WIP')"
+    int      lot_id PK
+    int      item_id FK
+    varchar  stage "('Inventory', 'WIP')"
     datetime created_at
   }
+
+  formulainfo
+  Fragrance
+  StorageLocation
   whorderdetail {
     int WHOrderDetailID PK
     float QtyReceived
   }
-  StorageLocation
-  InventoryTx }o--|| StorageLocation : "InventoryTx.to_location_id :: StorageLocation.StorageLocationID"
-  InventoryTx }o--|| StorageLocation : "InventoryTx.from_location_id :: StorageLocation.StorageLocationID"
+
+  InventoryTx }o..|| StorageLocation : "InventoryTx.to_location_id :: StorageLocation.StorageLocationID"
+  InventoryTx }o..|| StorageLocation : "InventoryTx.from_location_id :: StorageLocation.StorageLocationID"
   whorderdetail ||--|{ InventoryTx : "whorderdetail.WHOrderDetailID :: InventoryTx.lot_id"
-  InventoryTx }|--|| Lot : "InventoryTx.lot_id :: Lot.id"
+  InventoryTx }|--|| Lot : "InventoryTx.lot_id :: Lot.lot_id"
+  Lot }o--|| Item : "Lot.item_id :: Item.item_id"
+  Item ||..|| Fragrance : "Item.rm_id :: Fragrance.id"
+  Item ||..|| formulainfo : "Item.fg_id :: formulainfo.id"
 ```
 
 ```mermaid
@@ -220,7 +232,7 @@ flowchart TB
 
 - [x] Net-0 tables
 
-> Using views (old::new): 16:11
+> Using views (old::new): 16:12
 
 - [x] Minimal Tool Breakage
 
