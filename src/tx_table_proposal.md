@@ -83,7 +83,7 @@ erDiagram
 
 ```mermaid
 ---
-title: Proposal
+title: Schema
 ---
 erDiagram
   InventoryTx {
@@ -143,7 +143,7 @@ title: Manipulate Raw Material Inventory
 flowchart TB
   rm_in_inventory(("RM in Inventory"))
   adjust_inventory_negative("User applies negative inventory adjustment.")
-  tx_adjust_inventory_negative["Write from \[building_location_id\] to Scrap in tx table."]
+  tx_adjust_inventory_negative(["Write from \[building_location_id\] to Scrap in tx table."])
   adjust_inventory_positive("User applies positive inventory adjustment.")
   tx_adjust_inventory_positive["Write from null to \[building_location_id\] in tx table."]
   relocate_rm("User relocates RM.")
@@ -153,7 +153,7 @@ flowchart TB
   cast_rm_to_wip["Change Lot \`kind\` to WIP"]
   lot_in_wip((("LOT in WIP")))
 
-  rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative --> rm_in_inventory
+  rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative
   rm_in_inventory -->|optional| adjust_inventory_positive --> tx_adjust_inventory_positive --> rm_in_inventory
   rm_in_inventory -->|optional| relocate_rm --> tx_relocate_rm --> rm_in_inventory
   rm_in_inventory --> wip_rm --> tx_wip_rm --> cast_rm_to_wip --> lot_in_wip
@@ -177,6 +177,26 @@ flowchart TB
 
   lot_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
   lot_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> create_fg --> tx_create_fg --> fg_in_inventory
+```
+
+```mermaid
+---
+title: Manipulate FG
+---
+flowchart TB
+  fg_in_inventory(("FG in Inventory."))
+  scrap_fg("User scraps FG.")
+  tx_scrap_fg(["Write from: 'FG' to: 'Scrap' in InventoryTx."])
+  adjust_fg_positive("User performs a positive adjustment to FG.")
+  tx_adjust_fg_positive["Write from: null to: 'FG' in \`InventoryTx\`."]
+  pick_fg("User consumes FG to fulfill Sales Order.")
+  tx_pick_fg["Write from: 'FG' to: 'Shipping'"]
+  ship_fg("User ships FG to Customer.")
+  tx_ship_fg(["Write from: 'Shipping' to null in \`InventoryTx\`"])
+
+  fg_in_inventory -->|optional| scrap_fg --> tx_scrap_fg
+  fg_in_inventory -->|optional| adjust_fg_positive --> tx_adjust_fg_positive --> fg_in_inventory
+  fg_in_inventory --> pick_fg --> tx_pick_fg --> ship_fg --> tx_ship_fg
 ```
 
 ### Special Locations
@@ -223,12 +243,23 @@ flowchart TB
 > [!IMPORTANT]
 > RSM wants to replace `formula_stock_lot_adjustment`, `WHPrepStockDetail`, `whprep_StorageLocation_Lot`, `whorderdetail`, `whprepdetail_qtydetail`, and `multi_StorageLocation` with views against `InventoryTx` table as interfaces to prevent tool breakage.
 
+> [!NOTE]
+> Following FIFO physically on the floor is impractical, does not have much benefit, and physical processes keep the state close enough to correct.
+
 
 ## Questions
 
-- Why is the current system tying pours directly to LOT numbers for consumption?
-  - Floor is incapable of truly following FIFO.
-- Why does the system require a specific LOT assignment at time of `Start Prep`?
+> [!CAUTION]
+> Why is the current system tying pours directly to LOT numbers for consumption?
+
+> [!CAUTION]
+> Why does the system require a specific LOT assignment at time of `Start Prep`?
 
 > [!WARNING]
 > When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
+
+> [!WARNING]
+> When more Finished Good is found during a cycle count, and the inventory is positively adjusted, what should be the `from`?
+
+> [!WARNING]
+> Should additional "Special" locations be added for system boundaries ("Vendor", "Customer", etc.)? Current flowcharts show both yes and no.
