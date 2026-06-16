@@ -264,17 +264,17 @@ flowchart TB
 
 ## Questions
 
-> [!CAUTION]
-> Why is the current system tying pours directly to LOT numbers for consumption?
+Why is the current system tying pours directly to LOT numbers for consumption?
+  :
 
-> [!CAUTION]
-> Why does the system require a specific LOT assignment at time of `Start Prep`?
+Why does the system require a specific LOT assignment at time of `Start Prep`?
+  :
 
-> [!WARNING]
-> When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
+When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
+  :
 
-> [!WARNING]
-> When more Finished Good is found during a cycle count, and the inventory is positively adjusted, what should be the `from`?
+When more Finished Good is found during a cycle count, and the inventory is positively adjusted, what should be the `from`?
+  :
 
-> [!WARNING]
-> Should additional "Special" locations be added for system boundaries ("Vendor", "Customer", etc.)? Current flowcharts show both yes and no.
+Should additional "Special" locations be added for system boundaries ("Vendor", "Customer", etc.)? Current flowcharts show both yes and no.
+  :
