@@ -240,6 +240,9 @@ flowchart TB
 
 ## Notes
 
+> [!CAUTION]
+> Changing the process to use `InventoryTx` table will break **all** inventory-related writes & updates. This will require an overhaul of the system, projected to affect more than 80% of the code.
+
 > [!NOTE]
 > Tracing which WIP LOTs _could_ have affected a pour is separate from the internal LOTs consumed when a pour is performed. Internal LOTs should **always** consume FIFO regardless of traced internal LOT(s).
 
