@@ -211,6 +211,37 @@ flowchart TB
   fg_in_inventory --> pick_fg --> tx_pick_fg --> ship_fg --> tx_ship_fg
 ```
 
+```mermaid
+---
+title: Inventory Lifecycle
+---
+flowchart
+  po["Purchase Order"]
+  subgraph "Material Handler"
+    rm_inv_adj["Raw Material Inventory Adjustment"]
+    rm_inv["Raw Material Inventory"]
+  end
+  scrap["Scrap"]
+  subgraph "Compounder Station"
+    rm_wip_adj["Raw Material WIP Adjustment"]
+    rm_wip["Raw Material WIP"]
+    fg_wip_adj["Finished Good WIP Adjustment"]
+    fg_wip["Finished Good WIP"]
+  end
+  subgraph "Pack-off"
+    fg_inv_adj["Finished Good Inventory Adjustment"]
+    fg_inv["Finished Good Inventory"]
+  end
+  so["Sales Order"]
+
+  po -->         rm_inv -->     rm_wip -->     fg_wip -->     fg_inv --> so
+  rm_inv_adj --> rm_inv --> scrap
+                 rm_wip_adj --> rm_wip --> scrap
+                                fg_wip_adj --> fg_wip --> scrap
+                                               fg_inv_adj --> fg_inv --> scrap
+
+```
+
 ### Special Locations
 
 - Vendor
