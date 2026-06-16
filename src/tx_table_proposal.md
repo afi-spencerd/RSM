@@ -258,6 +258,9 @@ flowchart TB
 > [!NOTE]
 > Following FIFO physically on the floor is impractical, does not have much benefit, and physical processes keep the state close enough to correct.
 
+> [!TIP]
+> Adding the `Item` table goes against keeping the number of new tables to a minimum, but we are still well below the net-0 table requirement by using the views. CoPilot insists that the `Item` table is necessary for referential integrity, keeping query complexity minimal (reducing number of joins), performance and indexing, and future flexibility.
+
 
 ## Questions
 
