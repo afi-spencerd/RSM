@@ -14,7 +14,8 @@
   height: auto;
 }
 
-/* Give diagram-heavy pages more horizontal room than the default prose column. */
-:root {
-  --content-max-width: 1100px;
+/* Reduce the side margins on pages that contain a diagram so charts get the full
+   page width. Prose-only pages keep mdbook's default 750px reading width. */
+:root:has(.mermaid) {
+  --content-max-width: 1600px;
 }
