@@ -131,6 +131,8 @@ title: Receiving to Inventory
 ---
 flowchart TB
   start((Start))
+  ensure_item_rm["Get-or-create the RM's \`Item\` (\`kind\` = 'RM', links to Fragrance)."]
+  create_rm_lot["Create the RM \`Lot\` (\`stage\` = 'Inventory') against the \`Item\`."]
   order_rm("User sets an PO to ordered.")
   tx_order_rm["Write from null to Vendor to tx table."]
   unorder_rm("User unsets 'ordered' in PO.")
@@ -143,7 +145,7 @@ flowchart TB
   tx_receive_rm["Write from 'Receiving' to \[building_location_id\] in tx table."]
   rm_in_inventory((("RM in Inventory")))
 
-  start --> order_rm --> tx_order_rm -->|optional| unorder_rm --> tx_unorder_rm --> order_rm
+  start --> ensure_item_rm --> create_rm_lot --> order_rm --> tx_order_rm -->|optional| unorder_rm --> tx_unorder_rm --> order_rm
                          tx_order_rm --> rm_arrive --> tx_rm_arrive --> is_qc_pass -->|no| return_rm --> tx_return_rm
                                                                         is_qc_pass -->|yes| tx_receive_rm --> rm_in_inventory
 ```
@@ -162,7 +164,7 @@ flowchart TB
   tx_relocate_rm["Write from \[building_location_id\] to \[building_location_id\] in tx table."]
   wip_rm("Move RM into WIP.")
   tx_wip_rm["Write from \[building_location_id\] to WIP in tx table."]
-  cast_rm_to_wip["Change Lot \`kind\` to WIP"]
+  cast_rm_to_wip["Change Lot \`stage\` to 'WIP'."]
   lot_in_wip((("LOT in WIP")))
 
   rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative
@@ -179,16 +181,17 @@ flowchart TB
   A@{ shape: brace-r, label: "To adjust WIP positive, adjust inventory then move to WIP"}
   lot_in_wip(("LOT in WIP"))
   consume_rm("RM consumed in Compounder Tool.")
-  tx_consume_rm["Write from WIP to FG in tx table."]
+  tx_consume_rm["Write a CONSUMPTION (from WIP to null) against the RM \`Lot\` in \`InventoryTx\`."]
   scrap_wip_rm("Scrap RM from WIP.")
   tx_scrap_wip_rm(["Write from WIP to Scrap in tx table."])
   pack_fg("Packer packs FG.")
-  create_fg["Create FG Lot in \`Lot\` table."]
-  tx_create_fg["Write from WIP to FG in \`InventoryTx\` table against new FG LOT."]
+  ensure_item_fg["Get-or-create the FG's \`Item\` (\`kind\` = 'FG', links to formulainfo)."]
+  create_fg["Create FG \`Lot\` (\`stage\` = 'Inventory') against the \`Item\`."]
+  tx_create_fg["Write a PRODUCTION (from null to FG) against the new FG \`Lot\` in \`InventoryTx\`."]
   fg_in_inventory((("FG in Inventory.")))
 
   lot_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
-  lot_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> create_fg --> tx_create_fg --> fg_in_inventory
+  lot_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> ensure_item_fg --> create_fg --> tx_create_fg --> fg_in_inventory
 ```
 
 ```mermaid
@@ -284,7 +287,7 @@ flowchart
 > RSM wants to use `InventoryTx` table for **both** Raw Materials and Finished Goods.
 
 > [!TIP]
-> CoPilot recommends a `Lot` table in order to track both Raw Materials and Finished Goods within the `InventoryTx` table. To enable tracking both RM LOTs (`int`) and FG LOTs (`varchar`), it recommends having a `kind` enum column and cast all LOT codes to `varchar` in the `Lot` table. _When accessing the table, row `kind` should **always** be checked._
+> CoPilot recommends a `Lot` table in order to track both Raw Materials and Finished Goods within the `InventoryTx` table. Each `Lot` carries a surrogate `lot_id` and references an `Item`, whose `kind` enum (`'RM'`, `'FG'`) distinguishes Raw Materials from Finished Goods; the `Lot.stage` enum (`'Inventory'`, `'WIP'`) tracks where the lot sits in its life-cycle. _When accessing a `Lot`, its `Item.kind` should **always** be checked._
 
 > [!IMPORTANT]
 > RSM wants to replace `formula_stock_lot_adjustment`, `WHPrepStockDetail`, `whprep_StorageLocation_Lot`, `whorderdetail`, `whprepdetail_qtydetail`, and `multi_StorageLocation` with views against `InventoryTx` table as interfaces to prevent tool breakage.
@@ -305,7 +308,7 @@ Why does the system require a specific LOT assignment at time of `Start Prep`?
   :
 
 When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
-  :
+  : The RM is consumed out of `WIP` at pour time (a `CONSUMPTION` tx, `WIP` → `null`) and is **not** tracked as a discrete lot between pour and pack-off (consistent with not following FIFO physically on the floor). The Finished Good is _produced_, not moved: at pack-off a new FG `Lot` is created and a `PRODUCTION` tx (`null` → `FG`) brings it into inventory. Consumption and production are independent postings against different lots, so the FG is **not** sourced "from WIP" — doing so would double-debit `WIP`.
 
 When more Finished Good is found during a cycle count, and the inventory is positively adjusted, what should be the `from`?
   :
