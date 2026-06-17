@@ -88,13 +88,22 @@ title: "Proposed Schema"
 erDiagram
   InventoryTx {
     int      tx_id  PK
+    int      tenant_id FK
     int      item_id FK
-    int      lot_id FK "NULL — unset once in WIP"
-    int      from_location_id FK "NULL"
-    int      to_location_id   FK "NULL"
-    decimal  qty
-    datetime created_at
-    varchar  kind "('RECEIPT', 'MOVE', 'CONSUMPTION', 'ADJUSTMENT', 'PRODUCTION', 'SCRAP')"
+    int      lot_id FK "NULL — proposed; lost in WIP"
+    varchar  type "('RECEIPT','CONSUME','PRODUCTION_OUTPUT','SHIPMENT','ADJUSTMENT','TRANSFER')"
+    varchar  state "('INV','WIP')"
+    int      from_location_id FK "NULL — proposed (P1 #2)"
+    int      to_location_id   FK "NULL — proposed (P1 #2)"
+    decimal  quantity "signed: + inbound, - outbound"
+    decimal  unit_cost
+    decimal  value "signed = quantity * unit_cost"
+    decimal  balance_qty "on-hand after this line"
+    decimal  balance_avg_cost "moving avg after this line"
+    varchar  doc_type "('PURCHASE_ORDER','PRODUCTION_RUN','SALES_ORDER','ADJUSTMENT') NULL"
+    int      doc_id "NULL"
+    varchar  note "NULL"
+    datetime occurred_at
   }
   Item {
     int      item_id PK
@@ -276,17 +285,23 @@ erDiagram
   }
   InventoryTx {
     int      tx_id PK
+    int      tenant_id FK
     int      item_id FK
-    int      lot_id FK "NULL — lost in WIP"
-    int      from_location_id FK "NULL"
-    int      to_location_id FK "NULL"
-    decimal  qty
-    varchar  kind "('RECEIPT','MOVE','CONSUMPTION','ADJUSTMENT','PRODUCTION','SCRAP')"
-    varchar  source_doc_type "('PO','SO','ADJUSTMENT','PREP') NULL"
-    int      source_doc_id "NULL"
-    varchar  reason
-    int      created_by FK "User who posted the tx"
-    datetime created_at
+    int      lot_id FK "NULL — proposed; lost in WIP"
+    varchar  type "('RECEIPT','CONSUME','PRODUCTION_OUTPUT','SHIPMENT','ADJUSTMENT','TRANSFER')"
+    varchar  state "('INV','WIP')"
+    int      from_location_id FK "NULL — proposed (P1 #2)"
+    int      to_location_id FK "NULL — proposed (P1 #2)"
+    decimal  quantity "signed: + inbound, - outbound"
+    decimal  unit_cost
+    decimal  value "signed = quantity * unit_cost"
+    decimal  balance_qty "on-hand after this line"
+    decimal  balance_avg_cost "moving avg after this line"
+    varchar  doc_type "('PURCHASE_ORDER','PRODUCTION_RUN','SALES_ORDER','ADJUSTMENT') NULL"
+    int      doc_id "NULL"
+    int      created_by FK "NULL — proposed (P2 #3); who posted the tx"
+    varchar  note "NULL"
+    datetime occurred_at
   }
   PurchaseOrder {
     int      po_id PK
@@ -329,22 +344,51 @@ erDiagram
   Item              ||--o{ PurchaseOrderLine : "item_id"
   SalesOrder        ||--|{ SalesOrderLine    : "so_id"
   Item              ||--o{ SalesOrderLine    : "item_id"
-  PurchaseOrderLine }o..o{ InventoryTx       : "source_doc (PO)"
-  SalesOrderLine    }o..o{ InventoryTx       : "source_doc (SO)"
+  PurchaseOrderLine }o..o{ InventoryTx       : "doc (PURCHASE_ORDER)"
+  SalesOrderLine    }o..o{ InventoryTx       : "doc (SALES_ORDER)"
 ```
+
+> [!IMPORTANT]
+> `InventoryTx`'s columns mirror fw3's implemented `InventoryTxn`: `tenant_id`,
+> `item_id`, `type`, `state` (`INV`/`WIP`), a **signed** `quantity` (+ inbound / −
+> outbound), `unit_cost` / `value`, the carried `balance_qty` / `balance_avg_cost`,
+> `doc_type` / `doc_id`, `note`, and `occurred_at`. The `lot_id`,
+> `from_location_id` / `to_location_id`, and `created_by` are **proposed extensions
+> not yet in fw3** — lot attribution (P1 #1), the location dimension (P1 #2), and
+> the audit actor (P2 #3) respectively. Because fw3 is single-position, `state` plus
+> the signed `quantity` already encode direction; the proposed `from`/`to` locations
+> are a finer-grained generalization of `state`.
+
+The flowcharts and the table above use location-transfer verbs; fw3's `type` +
+`state` + sign is the as-built encoding (fw3 has no `MOVE`, `SCRAP`, or
+`PRODUCTION` type):
+
+| Flowchart verb | fw3 `type` | `state` | `quantity` |
+| --- | --- | --- | --- |
+| `RECEIPT` (→ building) | `RECEIPT` | `INV` | + |
+| `MOVE` building → building | `TRANSFER` | `INV` | −/+ pair |
+| `MOVE` building → WIP | `TRANSFER` | `INV` → `WIP` | −/+ pair |
+| `CONSUMPTION` (WIP →) | `CONSUME` | `WIP` | − |
+| `PRODUCTION` (→ FG) | `PRODUCTION_OUTPUT` | `INV` | + |
+| `ADJUSTMENT` | `ADJUSTMENT` | `INV` / `WIP` | +/− |
+| `SCRAP` (→ Scrap) | `ADJUSTMENT` | `INV` / `WIP` | − |
+| ship (FG → out) | `SHIPMENT` | `INV` | − |
 
 > [!NOTE]
 > `InventoryTx` is **append-only**. Corrections are made by posting a reversing
 > transaction, never by editing or deleting a row — this preserves a complete
-> audit trail. The `source_doc_type` / `source_doc_id` pair is a polymorphic link
-> back to whatever drove the movement (a PO line, SO line, adjustment, or prep),
-> and `created_by` records who posted it.
+> audit trail. The `doc_type` / `doc_id` pair links a line back to whatever drove
+> the movement (a PO, production run, sales order, or adjustment), and the proposed
+> `created_by` records who posted it.
 
 > [!TIP]
 > `Location` generalizes the legacy `StorageLocation` (building locations,
 > `is_virtual` = false) together with the system-boundary "Special Locations"
-> below (`is_virtual` = true). Current on-hand by lot/location is a `SUM(qty)`
-> view over `InventoryTx`, never a stored balance.
+> below (`is_virtual` = true). Following fw3, an item's on-hand and moving-average
+> cost are **carried on each line** as `balance_qty` / `balance_avg_cost` (the latest
+> line is the current position); a `SUM(quantity)` aggregate is an equivalent
+> cross-check. These balances are **per item** — per-(item, location) balances would
+> arrive with the location dimension (P1 #2).
 
 Each life-cycle transition maps to exactly one `InventoryTx` row:
 
