@@ -245,6 +245,119 @@ flowchart
 
 ```
 
+The schema below is built to facilitate this life-cycle. Every stage transition
+in the flowchart above corresponds to one append-only row in `InventoryTx`, which
+serves as the immutable transaction history (ledger) for auditing material flow.
+
+```mermaid
+---
+title: "Lifecycle & Audit Schema"
+---
+erDiagram
+  Item {
+    int      item_id PK
+    varchar  kind "('RM', 'FG')"
+    varchar  sku
+    varchar  description
+    int      rm_id FK "NULL :: Fragrance"
+    int      fg_id FK "NULL :: formulainfo"
+  }
+  Lot {
+    int      lot_id PK
+    int      item_id FK
+    varchar  lot_code
+    varchar  stage "('Inventory', 'WIP')"
+    datetime created_at
+  }
+  Location {
+    int      location_id PK
+    varchar  name
+    varchar  kind "('Building','Vendor','Receiving','WIP','FG','Shipping','Scrap')"
+    boolean  is_virtual "true for system-boundary locations"
+  }
+  InventoryTx {
+    int      tx_id PK
+    int      lot_id FK
+    int      from_location_id FK "NULL"
+    int      to_location_id FK "NULL"
+    decimal  qty
+    varchar  kind "('RECEIPT','MOVE','CONSUMPTION','ADJUSTMENT','PRODUCTION','SCRAP')"
+    varchar  source_doc_type "('PO','SO','ADJUSTMENT','PREP') NULL"
+    int      source_doc_id "NULL"
+    varchar  reason
+    int      created_by FK "User who posted the tx"
+    datetime created_at
+  }
+  PurchaseOrder {
+    int      po_id PK
+    int      vendor_id FK
+    varchar  status "('Draft','Ordered','Received','Closed')"
+    datetime created_at
+  }
+  PurchaseOrderLine {
+    int      po_line_id PK
+    int      po_id FK
+    int      item_id FK
+    decimal  qty_ordered
+    decimal  qty_received
+  }
+  SalesOrder {
+    int      so_id PK
+    int      customer_id FK
+    varchar  status "('Open','Picked','Shipped','Closed')"
+    datetime created_at
+  }
+  SalesOrderLine {
+    int      so_line_id PK
+    int      so_id FK
+    int      item_id FK
+    decimal  qty_ordered
+    decimal  qty_shipped
+  }
+  User {
+    int      user_id PK
+    varchar  name
+  }
+
+  Item              ||--o{ Lot               : "item_id"
+  Lot               ||--o{ InventoryTx       : "lot_id"
+  Location          ||--o{ InventoryTx       : "to_location_id"
+  Location          ||--o{ InventoryTx       : "from_location_id"
+  User              ||--o{ InventoryTx       : "created_by"
+  PurchaseOrder     ||--|{ PurchaseOrderLine : "po_id"
+  Item              ||--o{ PurchaseOrderLine : "item_id"
+  SalesOrder        ||--|{ SalesOrderLine    : "so_id"
+  Item              ||--o{ SalesOrderLine    : "item_id"
+  PurchaseOrderLine }o..o{ InventoryTx       : "source_doc (PO)"
+  SalesOrderLine    }o..o{ InventoryTx       : "source_doc (SO)"
+```
+
+> [!NOTE]
+> `InventoryTx` is **append-only**. Corrections are made by posting a reversing
+> transaction, never by editing or deleting a row — this preserves a complete
+> audit trail. The `source_doc_type` / `source_doc_id` pair is a polymorphic link
+> back to whatever drove the movement (a PO line, SO line, adjustment, or prep),
+> and `created_by` records who posted it.
+
+> [!TIP]
+> `Location` generalizes the legacy `StorageLocation` (building locations,
+> `is_virtual` = false) together with the system-boundary "Special Locations"
+> below (`is_virtual` = true). Current on-hand by lot/location is a `SUM(qty)`
+> view over `InventoryTx`, never a stored balance.
+
+Each life-cycle transition maps to exactly one `InventoryTx` row:
+
+| Life-cycle transition | `kind` | `from` → `to` | `source_doc` |
+| --- | --- | --- | --- |
+| Purchase Order → RM Inventory | `RECEIPT` | `Vendor` → `Receiving` → `[building]` | PO line |
+| RM Inventory Adjustment (+/−) | `ADJUSTMENT` | `null` → `[building]` / `[building]` → `Scrap` | adjustment |
+| RM Inventory → RM WIP | `MOVE` | `[building]` → `WIP` | prep |
+| RM WIP → FG WIP (consumed) | `CONSUMPTION` | `WIP` → `null` | prep |
+| FG WIP → FG Inventory (pack-off) | `PRODUCTION` | `null` → `FG` | prep |
+| FG Inventory Adjustment (+/−) | `ADJUSTMENT` | `null` → `FG` / `FG` → `Scrap` | adjustment |
+| FG Inventory → Sales Order | `MOVE` | `FG` → `Shipping` → `null` | SO line |
+| Any stage → Scrap | `SCRAP` | `[stage]` → `Scrap` | adjustment |
+
 ### Special Locations
 
 - Vendor

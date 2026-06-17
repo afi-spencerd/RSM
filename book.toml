@@ -1,6 +1,6 @@
 [book]
 title = "RSM Inventory"
-authors = []
+authors = ["Spencer Dent", "Joe Krause", "Foram Patel"]
 language = "en"
 
 [preprocessor]
