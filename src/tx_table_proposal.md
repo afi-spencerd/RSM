@@ -88,7 +88,8 @@ title: "Proposed Schema"
 erDiagram
   InventoryTx {
     int      tx_id  PK
-    int      lot_id FK
+    int      item_id FK
+    int      lot_id FK "NULL — unset once in WIP"
     int      from_location_id FK "NULL"
     int      to_location_id   FK "NULL"
     decimal  qty
@@ -104,7 +105,6 @@ erDiagram
   Lot {
     int      lot_id PK
     int      item_id FK
-    varchar  stage "('Inventory', 'WIP')"
     datetime created_at
   }
 
@@ -119,7 +119,8 @@ erDiagram
   InventoryTx }o..|| StorageLocation : "InventoryTx.to_location_id :: StorageLocation.StorageLocationID"
   InventoryTx }o..|| StorageLocation : "InventoryTx.from_location_id :: StorageLocation.StorageLocationID"
   whorderdetail ||--|{ InventoryTx : "whorderdetail.WHOrderDetailID :: InventoryTx.lot_id"
-  InventoryTx }|--|| Lot : "InventoryTx.lot_id :: Lot.lot_id"
+  InventoryTx }o--|| Item : "InventoryTx.item_id :: Item.item_id"
+  InventoryTx }o--o| Lot : "InventoryTx.lot_id :: Lot.lot_id (NULL in WIP)"
   Lot }o--|| Item : "Lot.item_id :: Item.item_id"
   Item ||..|| Fragrance : "Item.rm_id :: Fragrance.id"
   Item ||..|| formulainfo : "Item.fg_id :: formulainfo.id"
@@ -132,7 +133,7 @@ title: Receiving to Inventory
 flowchart TB
   start((Start))
   ensure_item_rm["Get-or-create the RM's \`Item\` (\`kind\` = 'RM', links to Fragrance)."]
-  create_rm_lot["Create the RM \`Lot\` (\`stage\` = 'Inventory') against the \`Item\`."]
+  create_rm_lot["Create the RM \`Lot\` against the \`Item\`."]
   order_rm("User sets an PO to ordered.")
   tx_order_rm["Write from null to Vendor to tx table."]
   unorder_rm("User unsets 'ordered' in PO.")
@@ -163,14 +164,13 @@ flowchart TB
   relocate_rm("User relocates RM.")
   tx_relocate_rm["Write from \[building_location_id\] to \[building_location_id\] in tx table."]
   wip_rm("Move RM into WIP.")
-  tx_wip_rm["Write from \[building_location_id\] to WIP in tx table."]
-  cast_rm_to_wip["Change Lot \`stage\` to 'WIP'."]
-  lot_in_wip((("LOT in WIP")))
+  tx_wip_rm["Write from \[building_location_id\] to WIP against the RM \`Lot\` — last lot-attributed line."]
+  rm_in_wip((("RM in WIP (lot-less blend)")))
 
   rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative
   rm_in_inventory -->|optional| adjust_inventory_positive --> tx_adjust_inventory_positive --> rm_in_inventory
   rm_in_inventory -->|optional| relocate_rm --> tx_relocate_rm --> rm_in_inventory
-  rm_in_inventory --> wip_rm --> tx_wip_rm --> cast_rm_to_wip --> lot_in_wip
+  rm_in_inventory --> wip_rm --> tx_wip_rm --> rm_in_wip
 ```
 
 ```mermaid
@@ -179,19 +179,19 @@ title: Manipulate WIP
 ---
 flowchart TB
   A@{ shape: brace-r, label: "To adjust WIP positive, adjust inventory then move to WIP"}
-  lot_in_wip(("LOT in WIP"))
+  rm_in_wip(("RM in WIP (lot-less blend)"))
   consume_rm("RM consumed in Compounder Tool.")
-  tx_consume_rm["Write a CONSUMPTION (from WIP to null) against the RM \`Lot\` in \`InventoryTx\`."]
+  tx_consume_rm["Write a CONSUMPTION (from WIP to null) for the RM \`Item\` — no \`Lot\` (WIP blend)."]
   scrap_wip_rm("Scrap RM from WIP.")
-  tx_scrap_wip_rm(["Write from WIP to Scrap in tx table."])
+  tx_scrap_wip_rm(["Write a SCRAP (from WIP to Scrap) for the RM \`Item\` — no \`Lot\`."])
   pack_fg("Packer packs FG.")
   ensure_item_fg["Get-or-create the FG's \`Item\` (\`kind\` = 'FG', links to formulainfo)."]
-  create_fg["Create FG \`Lot\` (\`stage\` = 'Inventory') against the \`Item\`."]
+  create_fg["Create FG \`Lot\` against the \`Item\` — LOT traceability resumes at pack-off."]
   tx_create_fg["Write a PRODUCTION (from null to FG) against the new FG \`Lot\` in \`InventoryTx\`."]
   fg_in_inventory((("FG in Inventory.")))
 
-  lot_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
-  lot_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> ensure_item_fg --> create_fg --> tx_create_fg --> fg_in_inventory
+  rm_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
+  rm_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> ensure_item_fg --> create_fg --> tx_create_fg --> fg_in_inventory
 ```
 
 ```mermaid
@@ -266,7 +266,6 @@ erDiagram
     int      lot_id PK
     int      item_id FK
     varchar  lot_code
-    varchar  stage "('Inventory', 'WIP')"
     datetime created_at
   }
   Location {
@@ -277,7 +276,8 @@ erDiagram
   }
   InventoryTx {
     int      tx_id PK
-    int      lot_id FK
+    int      item_id FK
+    int      lot_id FK "NULL — lost in WIP"
     int      from_location_id FK "NULL"
     int      to_location_id FK "NULL"
     decimal  qty
@@ -320,7 +320,8 @@ erDiagram
   }
 
   Item              ||--o{ Lot               : "item_id"
-  Lot               ||--o{ InventoryTx       : "lot_id"
+  Item              ||--o{ InventoryTx       : "item_id"
+  Lot               |o--o{ InventoryTx       : "lot_id (NULL in WIP)"
   Location          ||--o{ InventoryTx       : "to_location_id"
   Location          ||--o{ InventoryTx       : "from_location_id"
   User              ||--o{ InventoryTx       : "created_by"
@@ -358,6 +359,14 @@ Each life-cycle transition maps to exactly one `InventoryTx` row:
 | FG Inventory → Sales Order | `MOVE` | `FG` → `Shipping` → `null` | SO line |
 | Any stage → Scrap | `SCRAP` | `[stage]` → `Scrap` | adjustment |
 
+> [!NOTE]
+> `item_id` is set on **every** row; `lot_id` is set only while material is
+> lot-trackable. The RM-inventory lines (`RECEIPT`, `MOVE`, `ADJUSTMENT`) and the
+> FG lines (`PRODUCTION`, FG `MOVE`/`ADJUSTMENT`/`SCRAP`) carry a `lot_id`. The
+> `CONSUMPTION` and `SCRAP` lines out of `WIP` carry a **null** `lot_id` — RM blends
+> in the refill cans, so its lot can no longer be recovered. The move-into-`WIP`
+> line is the last lot-attributed line for an RM lot.
+
 ### Special Locations
 
 - Vendor
@@ -390,8 +399,11 @@ Each life-cycle transition maps to exactly one `InventoryTx` row:
 > [!CAUTION]
 > Changing the process to use `InventoryTx` table will break **all** inventory-related writes & updates. This will require an overhaul of the system, projected to affect more than 80% of the code.
 
+> [!IMPORTANT]
+> The `InventoryTx` ledger is keyed by `item_id` (always set) with an **optional** `lot_id`, mirroring fw3's implemented `InventoryTxn` (item-keyed, with an `INV` / `WIP` state). LOT traceability is **physically lost** when RM moves into WIP: the material is poured into refill cans and blends with other lots of the same item, so no single lot can be recovered. From that point a line records the `Item` but a `null` `Lot`; lot traceability resumes when a new FG `Lot` is created at pack-off.
+
 > [!NOTE]
-> Tracing which WIP LOTs _could_ have affected a pour is separate from the internal LOTs consumed when a pour is performed. Internal LOTs should **always** consume FIFO regardless of traced internal LOT(s).
+> Because WIP is a lot-less blend, only the RM LOTs whose (lot-attributed) move-into-WIP lines fed that blend can be said to _possibly_ have affected a pour — the exact lot is unrecoverable. Tracing those candidate LOTs is separate from the internal LOTs consumed when a pour is performed. Internal LOTs should **always** consume FIFO regardless of traced internal LOT(s).
 
 > [!TIP]
 > Pours should generate `Consumptions` against the RM (possibly using the Command/Event pattern), and those consumptions should be applied against the WIP inventory in FIFO order _after_ the pour is completed.
@@ -400,7 +412,7 @@ Each life-cycle transition maps to exactly one `InventoryTx` row:
 > RSM wants to use `InventoryTx` table for **both** Raw Materials and Finished Goods.
 
 > [!TIP]
-> CoPilot recommends a `Lot` table in order to track both Raw Materials and Finished Goods within the `InventoryTx` table. Each `Lot` carries a surrogate `lot_id` and references an `Item`, whose `kind` enum (`'RM'`, `'FG'`) distinguishes Raw Materials from Finished Goods; the `Lot.stage` enum (`'Inventory'`, `'WIP'`) tracks where the lot sits in its life-cycle. _When accessing a `Lot`, its `Item.kind` should **always** be checked._
+> CoPilot recommends a `Lot` table in order to track both Raw Materials and Finished Goods within the `InventoryTx` table. Each `Lot` carries a surrogate `lot_id` and references an `Item`, whose `kind` enum (`'RM'`, `'FG'`) distinguishes Raw Materials from Finished Goods. A `Lot` exists only while material is lot-trackable (RM in inventory, FG after pack-off); the `INV` / `WIP` distinction is **not** a property of the `Lot` but of each `InventoryTx` line (its `WIP` location). _When accessing a `Lot`, its `Item.kind` should **always** be checked._
 
 > [!IMPORTANT]
 > RSM wants to replace `formula_stock_lot_adjustment`, `WHPrepStockDetail`, `whprep_StorageLocation_Lot`, `whorderdetail`, `whprepdetail_qtydetail`, and `multi_StorageLocation` with views against `InventoryTx` table as interfaces to prevent tool breakage.
