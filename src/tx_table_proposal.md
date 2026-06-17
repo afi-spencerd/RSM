@@ -132,12 +132,15 @@ erDiagram
 ```
 
 > [!NOTE]
-> The flowcharts below describe the **conceptual physical lifecycle** and predate
-> fw3's two-ledger location model. Their "Write from _X_ to _Y_ in tx table" steps
-> and boundary "locations" (Vendor, Scrap, Shipping, …) map onto fw3's `InventoryTx`
-> (quantity / cost / `INV`-`WIP`-`QUARANTINE` status) and `LocationMove` (physical
-> placement) per the mapping under **Lifecycle & Audit Schema** below. They are kept
-> as-is pending a re-model.
+> The flowcharts below are modeled on fw3's **two ledgers**. Rectangles are ledger
+> writes — `InventoryTx:` lines carry a `type`, a `status` (`INV` / `WIP` /
+> `QUARANTINE`) and a signed quantity; `LocationMove:` lines are physical relocations
+> within a status. Rounded nodes are user/physical actions, diamonds are decisions,
+> and triple-circle nodes are resting states. Physical `Location`s are real; system
+> boundaries (Vendor, Customer, Scrap, Shipping) are **not** entities. A status
+> transfer (e.g. `QUARANTINE` → `INV`) is two value-balanced `InventoryTx` lines, and
+> lot identity (`ReceivedLot`) is tracked in `INV`/`QUARANTINE` but lost in the `WIP`
+> blend.
 
 ```mermaid
 ---
@@ -145,23 +148,19 @@ title: Receiving to Inventory
 ---
 flowchart TB
   start((Start))
-  ensure_item_rm["Get-or-create the RM's \`Item\` (\`kind\` = 'RM', links to Fragrance)."]
-  create_rm_lot["Create the RM \`Lot\` against the \`Item\`."]
-  order_rm("User sets an PO to ordered.")
-  tx_order_rm["Write from null to Vendor to tx table."]
-  unorder_rm("User unsets 'ordered' in PO.")
-  tx_unorder_rm["Write from Vendor to null to tx table."]
-  rm_arrive("RM arrives at Receiving dock.")
-  tx_rm_arrive["Write from Vendor to 'Receiving' to tx table."]
-  is_qc_pass{RM passes QC?}
-  return_rm("RM is returned to Vendor.")
-  tx_return_rm(["Write from 'Receiving' to 'Vendor' to tx table."])
-  tx_receive_rm["Write from 'Receiving' to \[building_location_id\] in tx table."]
-  rm_in_inventory((("RM in Inventory")))
+  order_po("User sets PO to Ordered.")
+  receive("User receives a PO line (RM arrives).")
+  tx_receive["InventoryTx: RECEIPT, status QUARANTINE, +qty."]
+  lot_receive["ReceivedLot created (origin RECEIPT, QC PENDING); placed at the is_receiving Location."]
+  is_qc_pass{"Lot passes QC?"}
+  reject_rm("Lot marked REJECTED (held / returned to vendor).")
+  tx_qc_pass["InventoryTx: TRANSFER QUARANTINE → INV (2 value-balanced lines); breakdown moves to the default INV Location."]
+  rm_in_inventory((("RM in INV — located, lot APPROVED")))
 
-  start --> ensure_item_rm --> create_rm_lot --> order_rm --> tx_order_rm -->|optional| unorder_rm --> tx_unorder_rm --> order_rm
-                         tx_order_rm --> rm_arrive --> tx_rm_arrive --> is_qc_pass -->|no| return_rm --> tx_return_rm
-                                                                        is_qc_pass -->|yes| tx_receive_rm --> rm_in_inventory
+  start --> order_po -->|no inventory write until receipt| receive
+  receive --> tx_receive --> lot_receive --> is_qc_pass
+  is_qc_pass -->|no| reject_rm
+  is_qc_pass -->|yes| tx_qc_pass --> rm_in_inventory
 ```
 
 ```mermaid
@@ -169,21 +168,21 @@ flowchart TB
 title: Manipulate Raw Material Inventory
 ---
 flowchart TB
-  rm_in_inventory(("RM in Inventory"))
-  adjust_inventory_negative("User applies negative inventory adjustment.")
-  tx_adjust_inventory_negative(["Write from \[building_location_id\] to Scrap in tx table."])
-  adjust_inventory_positive("User applies positive inventory adjustment.")
-  tx_adjust_inventory_positive["Write from null to \[building_location_id\] in tx table."]
+  rm_in_inventory(("RM in INV — located"))
+  adjust_negative("User applies a negative adjustment / cycle-count loss.")
+  tx_adjust_negative["InventoryTx: ADJUSTMENT, INV, −qty."]
+  adjust_positive("User applies a positive adjustment / cycle-count gain.")
+  tx_adjust_positive["InventoryTx: ADJUSTMENT, INV, +qty."]
   relocate_rm("User relocates RM.")
-  tx_relocate_rm["Write from \[building_location_id\] to \[building_location_id\] in tx table."]
-  wip_rm("Move RM into WIP.")
-  tx_wip_rm["Write from \[building_location_id\] to WIP against the RM \`Lot\` — last lot-attributed line."]
-  rm_in_wip((("RM in WIP (lot-less blend)")))
+  tx_relocate_rm["LocationMove: INV, Location A → Location B (qty & status unchanged)."]
+  stage_wip("Stage RM into WIP (refill cans).")
+  tx_stage_wip["InventoryTx: TRANSFER INV → WIP (2 lines); removed from its INV Location."]
+  rm_in_wip((("RM in WIP — unlocated, lot-less blend")))
 
-  rm_in_inventory -->|optional| adjust_inventory_negative --> tx_adjust_inventory_negative
-  rm_in_inventory -->|optional| adjust_inventory_positive --> tx_adjust_inventory_positive --> rm_in_inventory
+  rm_in_inventory -->|optional| adjust_negative --> tx_adjust_negative
+  rm_in_inventory -->|optional| adjust_positive --> tx_adjust_positive --> rm_in_inventory
   rm_in_inventory -->|optional| relocate_rm --> tx_relocate_rm --> rm_in_inventory
-  rm_in_inventory --> wip_rm --> tx_wip_rm --> rm_in_wip
+  rm_in_inventory --> stage_wip --> tx_stage_wip --> rm_in_wip
 ```
 
 ```mermaid
@@ -191,20 +190,25 @@ flowchart TB
 title: Manipulate WIP
 ---
 flowchart TB
-  A@{ shape: brace-r, label: "To adjust WIP positive, adjust inventory then move to WIP"}
-  rm_in_wip(("RM in WIP (lot-less blend)"))
-  consume_rm("RM consumed in Compounder Tool.")
-  tx_consume_rm["Write a CONSUMPTION (from WIP to null) for the RM \`Item\` — no \`Lot\` (WIP blend)."]
-  scrap_wip_rm("Scrap RM from WIP.")
-  tx_scrap_wip_rm(["Write a SCRAP (from WIP to Scrap) for the RM \`Item\` — no \`Lot\`."])
-  pack_fg("Packer packs FG.")
-  ensure_item_fg["Get-or-create the FG's \`Item\` (\`kind\` = 'FG', links to formulainfo)."]
-  create_fg["Create FG \`Lot\` against the \`Item\` — LOT traceability resumes at pack-off."]
-  tx_create_fg["Write a PRODUCTION (from null to FG) against the new FG \`Lot\` in \`InventoryTx\`."]
-  fg_in_inventory((("FG in Inventory.")))
+  A@{ shape: brace-r, label: "To add WIP positive, adjust INV then stage into WIP" }
+  rm_in_wip(("RM in WIP — unlocated, lot-less blend"))
+  scrap_wip("Scrap RM from WIP.")
+  tx_scrap_wip["InventoryTx: ADJUSTMENT, WIP, −qty (no lot)."]
+  consume("Work order completes — components consumed.")
+  tx_consume["InventoryTx: CONSUME, WIP, −qty (per component; no lot)."]
+  output_fg("Target FG output into the vat.")
+  tx_output["InventoryTx: PRODUCTION_OUTPUT, WIP, +qty (rolled-up cost)."]
+  lot_fg["ReceivedLot created (origin PRODUCTION, QC PENDING)."]
+  fg_qc{"FG lot passes QC?"}
+  reject_fg("Lot REJECTED (not eligible to pack off).")
+  packoff("Pack off QC-approved FG (FIFO over approved lots).")
+  tx_packoff["InventoryTx: TRANSFER WIP → INV (2 lines); placed at an INV Location."]
+  fg_in_inventory((("FG in INV — located, lot APPROVED")))
 
-  rm_in_wip -->|optional| scrap_wip_rm --> tx_scrap_wip_rm
-  rm_in_wip --> consume_rm --> tx_consume_rm --> pack_fg --> ensure_item_fg --> create_fg --> tx_create_fg --> fg_in_inventory
+  rm_in_wip -->|optional| scrap_wip --> tx_scrap_wip
+  rm_in_wip --> consume --> tx_consume --> output_fg --> tx_output --> lot_fg --> fg_qc
+  fg_qc -->|no| reject_fg
+  fg_qc -->|yes| packoff --> tx_packoff --> fg_in_inventory
 ```
 
 ```mermaid
@@ -212,19 +216,21 @@ flowchart TB
 title: Manipulate FG
 ---
 flowchart TB
-  fg_in_inventory(("FG in Inventory."))
+  fg_in_inventory(("FG in INV — located"))
   scrap_fg("User scraps FG.")
-  tx_scrap_fg(["Write from: 'FG' to: 'Scrap' in InventoryTx."])
-  adjust_fg_positive("User performs a positive adjustment to FG.")
-  tx_adjust_fg_positive["Write from: null to: 'FG' in \`InventoryTx\`."]
-  pick_fg("User consumes FG to fulfill Sales Order.")
-  tx_pick_fg["Write from: 'FG' to: 'Shipping'"]
-  ship_fg("User ships FG to Customer.")
-  tx_ship_fg(["Write from: 'Shipping' to null in \`InventoryTx\`"])
+  tx_scrap_fg["InventoryTx: ADJUSTMENT, INV, −qty."]
+  adjust_fg_positive("User applies a positive FG adjustment / cycle-count gain.")
+  tx_adjust_fg_positive["InventoryTx: ADJUSTMENT, INV, +qty."]
+  relocate_fg("User relocates FG.")
+  tx_relocate_fg["LocationMove: INV, Location A → Location B."]
+  ship_fg("User ships FG to fulfill a Sales Order.")
+  tx_ship_fg["InventoryTx: SHIPMENT, INV, −qty; removed from its INV Location."]
+  fg_shipped((("FG shipped — out of inventory")))
 
   fg_in_inventory -->|optional| scrap_fg --> tx_scrap_fg
   fg_in_inventory -->|optional| adjust_fg_positive --> tx_adjust_fg_positive --> fg_in_inventory
-  fg_in_inventory --> pick_fg --> tx_pick_fg --> ship_fg --> tx_ship_fg
+  fg_in_inventory -->|optional| relocate_fg --> tx_relocate_fg --> fg_in_inventory
+  fg_in_inventory --> ship_fg --> tx_ship_fg --> fg_shipped
 ```
 
 ```mermaid
@@ -415,17 +421,18 @@ The flowcharts below predate this split. Each conceptual "move" lands in the
 quantity/status ledger (`InventoryTx`), the physical-location ledger
 (`LocationMove`), or both; the system-boundary "locations" are not entities:
 
-| Flowchart move | `InventoryTx` (qty / status) | Location effect |
-| --- | --- | --- |
-| Receive RM (PO) | `RECEIPT`, `QUARANTINE`, + | placed at `is_receiving` location |
-| Pass QC | `TRANSFER` `QUARANTINE` → `INV` | breakdown moves to default `INV` loc |
-| Relocate in inventory | — | `LocationMove` (`INV`, from → to) |
-| Stage RM into WIP | `TRANSFER` `INV` → `WIP`, − | removed from location (`WIP` unlocated) |
-| Consume RM in pour | `CONSUME`, `WIP`, − | — |
-| Pack-off FG | `PRODUCTION_OUTPUT`, `INV`, + | placed at `INV` location |
-| Adjust (+/−) | `ADJUSTMENT`, +/− | breakdown +/− if located |
-| Scrap | `ADJUSTMENT`, − | removed if located |
-| Ship FG (SO) | `SHIPMENT`, `INV`, − | removed from location |
+| Flowchart move | `InventoryTx` (qty / status) | Location effect | Driver |
+| --- | --- | --- | --- |
+| Receive RM | `RECEIPT`, `QUARANTINE`, + | placed at `is_receiving` Location | PO line |
+| Pass QC | `TRANSFER` `QUARANTINE` → `INV` | breakdown → default `INV` Location | QC review |
+| Relocate | — | `LocationMove` (`INV`, from → to) | move op |
+| Stage into WIP | `TRANSFER` `INV` → `WIP` | removed from Location (`WIP` unlocated) | work order |
+| Consume (complete) | `CONSUME`, `WIP`, − | — | work order |
+| Output FG (complete) | `PRODUCTION_OUTPUT`, `WIP`, + | — (`WIP` unlocated) | work order |
+| Pack-off FG | `TRANSFER` `WIP` → `INV` | placed at `INV` Location | work order |
+| Adjust (+/−) | `ADJUSTMENT`, +/− | breakdown +/− if located | adjustment / count |
+| Scrap | `ADJUSTMENT`, − | removed if located | adjustment |
+| Ship FG | `SHIPMENT`, `INV`, − | removed from Location | SO line |
 
 > [!NOTE]
 > `InventoryTx` is **append-only**. Corrections are made by posting a reversing
@@ -442,27 +449,14 @@ quantity/status ledger (`InventoryTx`), the physical-location ledger
 > per-(item, status) position is `ItemStock`; `ItemStockLocation` breaks the located
 > statuses (`INV`, `QUARANTINE`) down by `Location`, summing to the `ItemStock` row.
 
-The conceptual life-cycle flow and its driving documents (the flowcharts depict the
-same; the per-ledger encoding is in the table above):
-
-| Life-cycle transition | `kind` | `from` → `to` | `source_doc` |
-| --- | --- | --- | --- |
-| Purchase Order → RM Inventory | `RECEIPT` | `Vendor` → `Receiving` → `[building]` | PO line |
-| RM Inventory Adjustment (+/−) | `ADJUSTMENT` | `null` → `[building]` / `[building]` → `Scrap` | adjustment |
-| RM Inventory → RM WIP | `MOVE` | `[building]` → `WIP` | prep |
-| RM WIP → FG WIP (consumed) | `CONSUMPTION` | `WIP` → `null` | prep |
-| FG WIP → FG Inventory (pack-off) | `PRODUCTION` | `null` → `FG` | prep |
-| FG Inventory Adjustment (+/−) | `ADJUSTMENT` | `null` → `FG` / `FG` → `Scrap` | adjustment |
-| FG Inventory → Sales Order | `MOVE` | `FG` → `Shipping` → `null` | SO line |
-| Any stage → Scrap | `SCRAP` | `[stage]` → `Scrap` | adjustment |
-
 > [!NOTE]
-> `item_id` is set on **every** row; `lot_id` is set only while material is
-> lot-trackable. The RM-inventory lines (`RECEIPT`, `MOVE`, `ADJUSTMENT`) and the
-> FG lines (`PRODUCTION`, FG `MOVE`/`ADJUSTMENT`/`SCRAP`) carry a `lot_id`. The
-> `CONSUMPTION` and `SCRAP` lines out of `WIP` carry a **null** `lot_id` — RM blends
-> in the refill cans, so its lot can no longer be recovered. The move-into-`WIP`
-> line is the last lot-attributed line for an RM lot.
+> `item_id` is set on **every** `InventoryTx` row. The proposed `lot_id` (fw3's
+> `ReceivedLot`) is set only while material is lot-trackable: the `RECEIPT`, the QC
+> `TRANSFER`, and `INV` adjustments carry it, as do the FG pack-off `TRANSFER` and
+> `INV` lines. The `CONSUME` and `ADJUSTMENT` lines in `WIP` carry a **null** lot —
+> RM blends in the refill cans, so its lot can no longer be recovered. The
+> stage-into-`WIP` `TRANSFER` is the last lot-attributed line for an RM lot; lot
+> identity resumes with the PRODUCTION `ReceivedLot` at output.
 
 ### Special Locations (not modeled as locations in fw3)
 
@@ -581,10 +575,10 @@ Why does the system require a specific LOT assignment at time of `Start Prep`?
   :
 
 When a Raw Material is consumed for a Finished Good, but the Finished Good has not been packaged, where is the Raw Material at that point? It's in the Finished Good, but the Finished Good doesn't truly exist yet. When the Finished Good is made, where should it come from? WIP?
-  : The RM is consumed out of `WIP` at pour time (a `CONSUMPTION` tx, `WIP` → `null`) and is **not** tracked as a discrete lot between pour and pack-off (consistent with not following FIFO physically on the floor). The Finished Good is _produced_, not moved: at pack-off a new FG `Lot` is created and a `PRODUCTION` tx (`null` → `FG`) brings it into inventory. Consumption and production are independent postings against different lots, so the FG is **not** sourced "from WIP" — doing so would double-debit `WIP`.
+  : The RM is consumed out of `WIP` when the work order completes — an `InventoryTx` `CONSUME`, `WIP`, −qty (lot-less; the refill-can blend). The Finished Good is _produced_, not moved: a separate `PRODUCTION_OUTPUT`, `WIP`, +qty posts the FG into the vat (a new PRODUCTION `ReceivedLot`, QC PENDING) at the rolled-up consumed cost. They are independent signed postings on different items — consumed value equals output value, so it balances without the FG being "sourced from" the RM. Pack-off is later a `TRANSFER` `WIP` → `INV`.
 
 When more Finished Good is found during a cycle count, and the inventory is positively adjusted, what should be the `from`?
-  : The `from` is `null` — a positive adjustment is an `ADJUSTMENT` tx (`null` → `FG`) against the FG `Lot`, mirroring the `Manipulate FG` flowchart's `tx_adjust_fg_positive`. The material has no prior tracked location (it was unaccounted-for stock surfaced by the count), so there is no source to debit. The same shape applies to a positive RM adjustment (`null` → `[building_location_id]`); a negative adjustment instead writes to `Scrap`.
+  : There is no `from`/`to` — fw3's ledger is signed. A positive count is an `InventoryTx` `ADJUSTMENT`, `INV`, +qty (no source to debit), and the located breakdown places the extra at its `Location`; a negative count is the same shape with −qty (scrap/loss included). This applies to both RM and FG. See the `Manipulate FG` flowchart's `tx_adjust_fg_positive`.
 
 Should additional "Special" locations be added for system boundaries ("Vendor", "Customer", etc.)? Current flowcharts show both yes and no.
   : **No** — fw3 settled this. `Location` is physical only; system boundaries (Vendor, Customer, Scrap, Shipping) are implicit in the `InventoryTx` `type` (`RECEIPT` / `SHIPMENT` / `ADJUSTMENT`), not stored as locations. The one real physical location for a "boundary" is **Receiving** (`is_receiving` = true), where received stock is held under `QUARANTINE` until QC passes. See "Special Locations" above.
