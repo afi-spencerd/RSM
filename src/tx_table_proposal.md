@@ -497,6 +497,51 @@ fw3 has **no** boundary/virtual locations; only physical `Location`s exist. The
 
 > Views with matching interface to replaced tables will reduce breakage. Will still require populating `InventoryTx` table to match current state.
 
+## Ledger Design: Two-Ledger vs Single-Ledger
+
+fw3 keeps **two append-only ledgers**, and the position tables are derived from
+them (mutable, upserted — not ledgers):
+
+| Table | Role | Records |
+| --- | --- | --- |
+| `InventoryTx` (fw3 `InventoryTxn`) | quantity / cost / status ledger | `RECEIPT`, `CONSUME`, `PRODUCTION_OUTPUT`, `SHIPMENT`, `ADJUSTMENT`, `TRANSFER`; carries running `balance_qty` / `balance_avg_cost` per (item, status) |
+| `LocationMove` | physical-move ledger | relocation **within** a status (`INV` / `QUARANTINE`); value-neutral; carries `actor_id` |
+| `ItemStock` | position (derived) | per (item, status) quantity + avg cost |
+| `ItemStockLocation` | position (derived) | per (item, status, location) quantity — located statuses only |
+
+A **single-ledger** design would fold physical moves into `InventoryTx` (a
+nullable `location_id`, or `from`/`to`, with a relocation recorded as one
+`from→to` row or two signed rows) and derive both position tables from that one
+ledger. It is feasible, but the trade-offs favor keeping the split.
+
+**Keep two ledgers (recommended) because:**
+
+- The quantity/cost ledger is the accounting-critical record (weighted-average
+  cost, `value`). Relocations are frequent and **value-neutral**; merging them in
+  pollutes every cost/quantity query with physical-move noise.
+- `InventoryTx`'s invariant "latest line per (item, status) is the position" stays
+  clean only if value-neutral relocations are kept out of it.
+- WIP is not located; INV/QUARANTINE are. The split lets `ItemStockLocation` /
+  `LocationMove` keep a DB-enforceable "located rows always have a location"
+  guarantee. A single ledger forces a nullable `location_id` (null for WIP) and
+  loses that.
+- The two ledgers can be written and locked independently; relocations don't
+  contend on (or bloat the indexes of) the valuation-source table.
+
+**A single ledger would buy:**
+
+- One source of truth — no chance of the two ledgers drifting (though fw3 already
+  keeps them consistent: every move runs in a DB transaction, and
+  `ItemStockLocation` sums to the `ItemStock` status total).
+- One unified actor column. But `LocationMove` already has `actor_id` and
+  `InventoryTx` does not — that gap (P2 #3) is far cheaper to close by adding
+  `created_by` to `InventoryTx` than by merging the ledgers.
+
+**Verdict:** keep the two-ledger split. If a single source of truth ever became
+necessary, the cleanest variant is a single **fully-located, signed** ledger
+(relocation = two rows) that derives both position tables — worth taking on only
+if the ledgers were actually drifting in practice, which they are not.
+
 ## Notes
 
 > [!CAUTION]
