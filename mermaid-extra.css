@@ -1,0 +1,20 @@
+/* Mermaid readability tweaks.
+   With `useMaxWidth: false` (see mermaid-init.js) diagrams render at their natural
+   size; these rules let a diagram that is wider than the text column scroll
+   horizontally instead of being shrunk down, and centre the smaller ones. */
+
+.mermaid {
+  overflow-x: auto;
+  text-align: center;
+  margin: 1rem 0;
+}
+
+.mermaid > svg {
+  max-width: none !important;
+  height: auto;
+}
+
+/* Give diagram-heavy pages more horizontal room than the default prose column. */
+:root {
+  --content-max-width: 1100px;
+}

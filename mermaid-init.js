@@ -17,7 +17,16 @@
     }
 
     const theme = lastThemeWasLight ? 'default' : 'dark';
-    mermaid.initialize({ startOnLoad: true, theme });
+    // Render diagrams at their natural size instead of shrinking them to fit the
+    // text column (the default `useMaxWidth: true` makes large ER diagrams tiny).
+    // Wide diagrams scroll horizontally via the `.mermaid` rule in mermaid-extra.css.
+    mermaid.initialize({
+        startOnLoad: true,
+        theme,
+        er: { useMaxWidth: false },
+        flowchart: { useMaxWidth: false },
+        sequence: { useMaxWidth: false },
+    });
 
     // Simplest way to make mermaid re-render the diagrams in the new theme is via refreshing the page
 
