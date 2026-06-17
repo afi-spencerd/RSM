@@ -92,9 +92,7 @@ erDiagram
     int      item_id FK
     int      lot_id FK "NULL — proposed; lost in WIP"
     varchar  type "('RECEIPT','CONSUME','PRODUCTION_OUTPUT','SHIPMENT','ADJUSTMENT','TRANSFER')"
-    varchar  state "('INV','WIP')"
-    int      from_location_id FK "NULL — proposed (P1 #2)"
-    int      to_location_id   FK "NULL — proposed (P1 #2)"
+    varchar  state "('INV','WIP','QUARANTINE')"
     decimal  quantity "signed: + inbound, - outbound"
     decimal  unit_cost
     decimal  value "signed = quantity * unit_cost"
@@ -125,8 +123,6 @@ erDiagram
     float QtyReceived
   }
 
-  InventoryTx }o..|| StorageLocation : "InventoryTx.to_location_id :: StorageLocation.StorageLocationID"
-  InventoryTx }o..|| StorageLocation : "InventoryTx.from_location_id :: StorageLocation.StorageLocationID"
   whorderdetail ||--|{ InventoryTx : "whorderdetail.WHOrderDetailID :: InventoryTx.lot_id"
   InventoryTx }o--|| Item : "InventoryTx.item_id :: Item.item_id"
   InventoryTx }o--o| Lot : "InventoryTx.lot_id :: Lot.lot_id (NULL in WIP)"
@@ -134,6 +130,14 @@ erDiagram
   Item ||..|| Fragrance : "Item.rm_id :: Fragrance.id"
   Item ||..|| formulainfo : "Item.fg_id :: formulainfo.id"
 ```
+
+> [!NOTE]
+> The flowcharts below describe the **conceptual physical lifecycle** and predate
+> fw3's two-ledger location model. Their "Write from _X_ to _Y_ in tx table" steps
+> and boundary "locations" (Vendor, Scrap, Shipping, …) map onto fw3's `InventoryTx`
+> (quantity / cost / `INV`-`WIP`-`QUARANTINE` status) and `LocationMove` (physical
+> placement) per the mapping under **Lifecycle & Audit Schema** below. They are kept
+> as-is pending a re-model.
 
 ```mermaid
 ---
@@ -254,9 +258,11 @@ flowchart
 
 ```
 
-The schema below is built to facilitate this life-cycle. Every stage transition
-in the flowchart above corresponds to one append-only row in `InventoryTx`, which
-serves as the immutable transaction history (ledger) for auditing material flow.
+The schema below is built to facilitate this life-cycle. Quantity, cost, and
+`status` (`INV` / `WIP` / `QUARANTINE`) changes are recorded as append-only rows in
+`InventoryTx`; physical relocation **within** a status is recorded in the separate
+append-only `LocationMove` ledger. Together they are the immutable transaction
+history for auditing material flow.
 
 ```mermaid
 ---
@@ -279,9 +285,40 @@ erDiagram
   }
   Location {
     int      location_id PK
+    int      tenant_id FK
     varchar  name
-    varchar  kind "('Building','Vendor','Receiving','WIP','FG','Shipping','Scrap')"
-    boolean  is_virtual "true for system-boundary locations"
+    varchar  code "NULL"
+    boolean  is_default "default INV location"
+    boolean  is_receiving "receiving / quarantine dock"
+    boolean  active
+  }
+  ItemStock {
+    int      item_stock_id PK
+    int      tenant_id FK
+    int      item_id FK
+    varchar  status "('INV','WIP','QUARANTINE')"
+    decimal  quantity
+    decimal  avg_cost
+  }
+  ItemStockLocation {
+    int      item_stock_location_id PK
+    int      tenant_id FK
+    int      item_id FK
+    varchar  status "('INV','QUARANTINE') — located only"
+    int      location_id FK
+    decimal  quantity
+  }
+  LocationMove {
+    int      location_move_id PK
+    int      tenant_id FK
+    int      item_id FK
+    varchar  status "('INV','QUARANTINE')"
+    int      from_location_id FK "NULL"
+    int      to_location_id FK "NULL"
+    decimal  quantity
+    int      actor_id FK "NULL"
+    varchar  note "NULL"
+    datetime occurred_at
   }
   InventoryTx {
     int      tx_id PK
@@ -289,9 +326,7 @@ erDiagram
     int      item_id FK
     int      lot_id FK "NULL — proposed; lost in WIP"
     varchar  type "('RECEIPT','CONSUME','PRODUCTION_OUTPUT','SHIPMENT','ADJUSTMENT','TRANSFER')"
-    varchar  state "('INV','WIP')"
-    int      from_location_id FK "NULL — proposed (P1 #2)"
-    int      to_location_id FK "NULL — proposed (P1 #2)"
+    varchar  state "('INV','WIP','QUARANTINE')"
     decimal  quantity "signed: + inbound, - outbound"
     decimal  unit_cost
     decimal  value "signed = quantity * unit_cost"
@@ -337,9 +372,14 @@ erDiagram
   Item              ||--o{ Lot               : "item_id"
   Item              ||--o{ InventoryTx       : "item_id"
   Lot               |o--o{ InventoryTx       : "lot_id (NULL in WIP)"
-  Location          ||--o{ InventoryTx       : "to_location_id"
-  Location          ||--o{ InventoryTx       : "from_location_id"
   User              ||--o{ InventoryTx       : "created_by"
+  Item              ||--o{ ItemStock         : "item_id"
+  Item              ||--o{ ItemStockLocation : "item_id"
+  Location          ||--o{ ItemStockLocation : "location_id"
+  Item              ||--o{ LocationMove      : "item_id"
+  Location          |o--o{ LocationMove      : "from_location_id"
+  Location          |o--o{ LocationMove      : "to_location_id"
+  User              |o--o{ LocationMove      : "actor_id"
   PurchaseOrder     ||--|{ PurchaseOrderLine : "po_id"
   Item              ||--o{ PurchaseOrderLine : "item_id"
   SalesOrder        ||--|{ SalesOrderLine    : "so_id"
@@ -349,30 +389,43 @@ erDiagram
 ```
 
 > [!IMPORTANT]
-> `InventoryTx`'s columns mirror fw3's implemented `InventoryTxn`: `tenant_id`,
-> `item_id`, `type`, `state` (`INV`/`WIP`), a **signed** `quantity` (+ inbound / −
-> outbound), `unit_cost` / `value`, the carried `balance_qty` / `balance_avg_cost`,
-> `doc_type` / `doc_id`, `note`, and `occurred_at`. The `lot_id`,
-> `from_location_id` / `to_location_id`, and `created_by` are **proposed extensions
-> not yet in fw3** — lot attribution (P1 #1), the location dimension (P1 #2), and
-> the audit actor (P2 #3) respectively. Because fw3 is single-position, `state` plus
-> the signed `quantity` already encode direction; the proposed `from`/`to` locations
-> are a finer-grained generalization of `state`.
+> `InventoryTx` mirrors fw3's `InventoryTxn` and is **item-keyed with no location
+> columns**: `tenant_id`, `item_id`, `type`, `state` (`INV` / `WIP` / `QUARANTINE`),
+> a **signed** `quantity`, `unit_cost` / `value`, the carried `balance_qty` /
+> `balance_avg_cost`, `doc_type` / `doc_id`, `note`, and `occurred_at`. `lot_id`
+> (P1 #1) and `created_by` (P2 #3) remain proposed extensions not yet in fw3.
 
-The flowcharts and the table above use location-transfer verbs; fw3's `type` +
-`state` + sign is the as-built encoding (fw3 has no `MOVE`, `SCRAP`, or
-`PRODUCTION` type):
+> [!IMPORTANT]
+> **fw3 splits inventory across two append-only ledgers — neither is a
+> location-stamped `InventoryTx`** (this supersedes the earlier "`from`/`to` on the
+> ledger" proposal):
+> - **`InventoryTx`** records quantity, cost, and `status` changes (`INV` / `WIP` /
+>   `QUARANTINE`); status transitions (`QUARANTINE` → `INV` at QC, `INV` → `WIP` at
+>   staging, `WIP` → `INV` at pack-off) are `TRANSFER` lines. `ItemStock` is the
+>   per-(item, status) position.
+> - **`LocationMove`** records physical relocation **within** a status (qty and
+>   status unchanged), carrying its own `actor_id`. `ItemStockLocation` is the
+>   per-(item, status, location) quantity breakdown, kept only for located statuses
+>   (`INV`, `QUARANTINE`); **`WIP` is not located**.
+>
+> `Location` is **physical only** (warehouse / room / bin / dock, with `is_default`
+> and `is_receiving` flags) — there are **no** boundary/virtual locations.
 
-| Flowchart verb | fw3 `type` | `state` | `quantity` |
-| --- | --- | --- | --- |
-| `RECEIPT` (→ building) | `RECEIPT` | `INV` | + |
-| `MOVE` building → building | `TRANSFER` | `INV` | −/+ pair |
-| `MOVE` building → WIP | `TRANSFER` | `INV` → `WIP` | −/+ pair |
-| `CONSUMPTION` (WIP →) | `CONSUME` | `WIP` | − |
-| `PRODUCTION` (→ FG) | `PRODUCTION_OUTPUT` | `INV` | + |
-| `ADJUSTMENT` | `ADJUSTMENT` | `INV` / `WIP` | +/− |
-| `SCRAP` (→ Scrap) | `ADJUSTMENT` | `INV` / `WIP` | − |
-| ship (FG → out) | `SHIPMENT` | `INV` | − |
+The flowcharts below predate this split. Each conceptual "move" lands in the
+quantity/status ledger (`InventoryTx`), the physical-location ledger
+(`LocationMove`), or both; the system-boundary "locations" are not entities:
+
+| Flowchart move | `InventoryTx` (qty / status) | Location effect |
+| --- | --- | --- |
+| Receive RM (PO) | `RECEIPT`, `QUARANTINE`, + | placed at `is_receiving` location |
+| Pass QC | `TRANSFER` `QUARANTINE` → `INV` | breakdown moves to default `INV` loc |
+| Relocate in inventory | — | `LocationMove` (`INV`, from → to) |
+| Stage RM into WIP | `TRANSFER` `INV` → `WIP`, − | removed from location (`WIP` unlocated) |
+| Consume RM in pour | `CONSUME`, `WIP`, − | — |
+| Pack-off FG | `PRODUCTION_OUTPUT`, `INV`, + | placed at `INV` location |
+| Adjust (+/−) | `ADJUSTMENT`, +/− | breakdown +/− if located |
+| Scrap | `ADJUSTMENT`, − | removed if located |
+| Ship FG (SO) | `SHIPMENT`, `INV`, − | removed from location |
 
 > [!NOTE]
 > `InventoryTx` is **append-only**. Corrections are made by posting a reversing
@@ -382,15 +435,15 @@ The flowcharts and the table above use location-transfer verbs; fw3's `type` +
 > `created_by` records who posted it.
 
 > [!TIP]
-> `Location` generalizes the legacy `StorageLocation` (building locations,
-> `is_virtual` = false) together with the system-boundary "Special Locations"
-> below (`is_virtual` = true). Following fw3, an item's on-hand and moving-average
-> cost are **carried on each line** as `balance_qty` / `balance_avg_cost` (the latest
-> line is the current position); a `SUM(quantity)` aggregate is an equivalent
-> cross-check. These balances are **per item** — per-(item, location) balances would
-> arrive with the location dimension (P1 #2).
+> `Location` maps to the legacy `StorageLocation` (physical building locations). The
+> system-boundary "Special Locations" below are **not** locations in fw3 — they are
+> implicit (see that section). An item's on-hand and moving-average cost are carried
+> per `InventoryTx` line as `balance_qty` / `balance_avg_cost`, and the
+> per-(item, status) position is `ItemStock`; `ItemStockLocation` breaks the located
+> statuses (`INV`, `QUARANTINE`) down by `Location`, summing to the `ItemStock` row.
 
-Each life-cycle transition maps to exactly one `InventoryTx` row:
+The conceptual life-cycle flow and its driving documents (the flowcharts depict the
+same; the per-ledger encoding is in the table above):
 
 | Life-cycle transition | `kind` | `from` → `to` | `source_doc` |
 | --- | --- | --- | --- |
@@ -411,14 +464,20 @@ Each life-cycle transition maps to exactly one `InventoryTx` row:
 > in the refill cans, so its lot can no longer be recovered. The move-into-`WIP`
 > line is the last lot-attributed line for an RM lot.
 
-### Special Locations
+### Special Locations (not modeled as locations in fw3)
 
-- Vendor
-- Receiving
-- WIP
-- FG
-- Shipping
-- Scrap
+fw3 has **no** boundary/virtual locations; only physical `Location`s exist. The
+"special locations" the flowcharts use map onto fw3 as:
+
+- **Vendor / Customer** — system boundaries, not stored. Crossing one is an
+  `InventoryTx` `RECEIPT` (inbound) or `SHIPMENT` (outbound).
+- **Receiving** — a physical `Location` (`is_receiving` = true); received stock
+  sits there under `QUARANTINE` status until QC passes (`TRANSFER` to `INV`).
+- **Scrap** — not a location; a negative `ADJUSTMENT`.
+- **WIP** — an `InventoryTx` / `ItemStock` `status`, **not** located (refill-can blend).
+- **FG** — not a location; finished goods are an `Item` (`kind` = FG) held under
+  `INV` status at a physical `Location`.
+- **Shipping** — not modeled; the `SHIPMENT` line removes stock from its location.
 
 ## Goals
 
@@ -483,4 +542,4 @@ When more Finished Good is found during a cycle count, and the inventory is posi
   : The `from` is `null` — a positive adjustment is an `ADJUSTMENT` tx (`null` → `FG`) against the FG `Lot`, mirroring the `Manipulate FG` flowchart's `tx_adjust_fg_positive`. The material has no prior tracked location (it was unaccounted-for stock surfaced by the count), so there is no source to debit. The same shape applies to a positive RM adjustment (`null` → `[building_location_id]`); a negative adjustment instead writes to `Scrap`.
 
 Should additional "Special" locations be added for system boundaries ("Vendor", "Customer", etc.)? Current flowcharts show both yes and no.
-  :
+  : **No** — fw3 settled this. `Location` is physical only; system boundaries (Vendor, Customer, Scrap, Shipping) are implicit in the `InventoryTx` `type` (`RECEIPT` / `SHIPMENT` / `ADJUSTMENT`), not stored as locations. The one real physical location for a "boundary" is **Receiving** (`is_receiving` = true), where received stock is held under `QUARANTINE` until QC passes. See "Special Locations" above.
