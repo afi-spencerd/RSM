@@ -9,3 +9,4 @@
 # Diagrams
 
 - [FW <-> QB](./fw_qb_integration.md)
+- [FW3 Schemas](./schemas.md)
