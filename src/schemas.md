@@ -14,6 +14,10 @@ A few conventions worth knowing while reading these:
 - **No cascading deletes.** Every foreign key is `onDelete: NoAction`.
 - **`state` columns** are mapped to `status` in the Prisma client (INV / WIP /
   QUARANTINE buckets).
+- **Position vs. catalogue.** Master rows (`InventoryItem`, `Container`) hold no
+  quantity; the on-hand position and moving-average cost live in a separate stock
+  table (`ItemStock` / `ContainerStock`) and an append-only ledger
+  (`InventoryTxn` / `ContainerTxn`).
 
 The diagrams are split by domain to stay readable. The
 [domain overview](#domain-overview) shows how the domains connect; `Tenant` is
@@ -29,19 +33,28 @@ erDiagram
   Tenant ||--o{ Customer : "sells to"
   Tenant ||--o{ Location : "stores at"
 
+  Tenant ||--o{ Container : "packs in"
+  Tenant ||--o{ BusinessVariableValue : "configures"
+
   InventoryItem ||--o{ Formula : "is finished good of"
   InventoryItem ||--o{ ItemStock : "has position"
   InventoryItem ||--o{ InventoryTxn : "moves via ledger"
   InventoryItem ||--o{ ReceivedLot : "received/produced as"
+  InventoryItem ||--o{ IfraCategoryLimit : "regulated by"
+  InventoryItem ||--o| FgRegulatoryProfile : "FG profile"
 
   Vendor ||--o{ PurchaseOrder : "receives"
   PurchaseOrder ||--o{ ReceivedLot : "lands as lots"
   Customer ||--o{ SalesOrder : "places"
+  SalesOrder ||--o{ Shipment : "fulfilled by"
+  SalesOrder ||--o{ ProductionWorkOrder : "scheduled as"
 
   Formula ||--o{ ProductionWorkOrder : "drives"
   ProductionWorkOrder ||--o{ CompounderPour : "consumed by"
+  ProductionWorkOrder ||--o{ PurchasingAlert : "flags shortage"
 
   ReceivedLot ||--o{ QualityTestResult : "QC'd by"
+  Container ||--o{ ContainerTxn : "moves via ledger"
   Location ||--o{ ItemStockLocation : "holds stock"
   InventoryItem ||--o{ CycleCountLine : "counted in"
   Tenant ||--o{ QbConnection : "syncs to QuickBooks"
@@ -106,12 +119,22 @@ live in `ItemStock` and the ledger. `Formula` defines a finished good as a set o
 raw materials by percentage of weight (`FormulaLine`); lines for a formula must
 sum to 100. `ItemQualitySpec` carries the per-item QC acceptance criteria.
 
+Regulatory data hangs off the item: `IfraCategoryLimit` records, per raw
+material, the maximum percentage it may reach in a finished product of a given
+IFRA use category (49th Amendment). For finished goods, `FgRegulatoryProfile` is
+the FormPak+ snapshot (the third-party data we can't derive in-house) with its
+per-category `FgIfraLevel` rows. `reorderPoint` flags replenishment;
+`productionUse` hides R&D/lab-only materials from the compounder dosing tool.
+
 ```mermaid
 erDiagram
   InventoryItem ||--o{ ItemQualitySpec : "has QC specs"
   InventoryItem ||--o{ Formula : "is finished good of"
   Formula ||--o{ FormulaLine : "has lines"
   InventoryItem ||--o{ FormulaLine : "used as raw material in"
+  InventoryItem ||--o{ IfraCategoryLimit : "RM IFRA limits"
+  InventoryItem ||--o| FgRegulatoryProfile : "FG regulatory profile"
+  FgRegulatoryProfile ||--o{ FgIfraLevel : "IFRA levels"
 
   InventoryItem {
     uuid id PK
@@ -122,12 +145,20 @@ erDiagram
     string physicalForm "LIQUID | SOLID"
     string unitOfMeasure "LB | KG"
     decimal salesPrice
+    decimal reorderPoint "null = untracked"
     string qbItemType "INVENTORY | NON_INVENTORY | SERVICE"
     decimal standardCost
+    string purchaseDescription
     string incomeAccount "QB account"
     string cogsAccount "QB account"
     string assetAccount "QB account"
     string qbListId "QBWC linkage"
+    string qbEditSequence
+    datetime qbSyncedAt
+    bool productionUse "RM: dosable on compounder tool"
+    string casNumber "RM"
+    decimal flashPointC "RM: closed-cup °C"
+    string prop65Status "UNKNOWN | NOT_LISTED | LISTED"
     bool active
   }
   ItemQualitySpec {
@@ -138,6 +169,31 @@ erDiagram
     decimal minValue "numeric tests"
     decimal maxValue "numeric tests"
     string expectedValue "judgment tests"
+  }
+  IfraCategoryLimit {
+    uuid id PK
+    uuid tenantId FK
+    uuid itemId FK
+    string category "1..12 incl. 5A/7B/10A; unique per item"
+    decimal maxPercent "max % in finished product, 0-100"
+  }
+  FgRegulatoryProfile {
+    uuid id PK
+    uuid tenantId FK
+    uuid itemId FK "unique (one per FG)"
+    decimal flashPointC
+    string complianceStatus "UNKNOWN | COMPLIANT | NON_COMPLIANT | PENDING"
+    string allergenDeclaration
+    string certificateUrl
+    string formPakRef
+    datetime syncedAt
+  }
+  FgIfraLevel {
+    uuid id PK
+    uuid tenantId FK
+    uuid profileId FK
+    string category "unique per profile"
+    decimal maxPercent
   }
   Formula {
     uuid id PK
@@ -265,6 +321,7 @@ erDiagram
     string purchaseOrderNumber "snapshot"
     string vendorName "snapshot"
     uuid sourceWorkOrderId "snapshot ref"
+    string workOrderNumber "snapshot"
     string supplierLotNumber
     uuid locationId FK
     decimal quantity
@@ -274,6 +331,7 @@ erDiagram
     string qcStatus "PENDING | APPROVED | REJECTED | RETURNED"
     string rejectionReason
     datetime receivedAt
+    uuid reviewedById "QC reviewer"
   }
   QualityTestResult {
     uuid id PK
@@ -315,8 +373,10 @@ erDiagram
 
 Vendors and their purchase orders. `Vendor` carries tax/payment-term details and
 has any number of addresses and contacts (scoped through the vendor, no
-`tenantId` of their own). `PurchaseOrderLine` tracks ordered vs. received
-quantity per item.
+`tenantId` of their own). The `suppliesMaterials` / `suppliesContainers` flags
+drive which subjects the PO page offers. A `PurchaseOrderLine` buys **either** an
+inventory item or a container (exactly one; CHECK) and tracks ordered vs.
+received quantity.
 
 ```mermaid
 erDiagram
@@ -325,6 +385,7 @@ erDiagram
   Vendor ||--o{ PurchaseOrder : "issued"
   PurchaseOrder ||--o{ PurchaseOrderLine : "has lines"
   InventoryItem ||--o{ PurchaseOrderLine : "ordered as"
+  Container ||--o{ PurchaseOrderLine : "ordered as"
 
   Vendor {
     uuid id PK
@@ -334,6 +395,8 @@ erDiagram
     string email
     string taxId
     string paymentTerms "DUE_ON_RECEIPT | NET_15 | NET_30 | ..."
+    bool suppliesMaterials
+    bool suppliesContainers
     bool isActive
   }
   VendorAddress {
@@ -366,7 +429,8 @@ erDiagram
   PurchaseOrderLine {
     uuid id PK
     uuid purchaseOrderId FK
-    uuid itemId FK
+    uuid itemId FK "item OR container (exactly one)"
+    uuid containerId FK
     decimal quantityOrdered
     decimal unitCost
     decimal quantityReceived
@@ -377,7 +441,14 @@ erDiagram
 ## Sales
 
 Mirrors purchasing. `Customer` adds a buy-volume `rating` (A–D) on top of the
-shared contact/address structure; `SalesOrderLine` tracks ordered vs. shipped.
+shared contact/address structure. A `SalesOrderLine` sells **either** an
+inventory item (`lineType = ITEM`) or a container itself
+(`lineType = CONTAINER`, via `productContainerId`); ITEM lines may carry a
+packing plan (`containerId` + `containerQuantity`). `SalesOrder` tracks the
+committed `requestedShipDate` (drives scheduler sequencing), `paidAt` (net-terms
+customers may request production unpaid), and `packedAt`. Shipments and
+SO-linked production work orders hang off the order — see
+[Shipments](#shipments) and [Production](#production).
 
 ```mermaid
 erDiagram
@@ -386,6 +457,7 @@ erDiagram
   Customer ||--o{ SalesOrder : "placed"
   SalesOrder ||--o{ SalesOrderLine : "has lines"
   InventoryItem ||--o{ SalesOrderLine : "sold as"
+  Container ||--o{ SalesOrderLine : "sold / packed as"
 
   Customer {
     uuid id PK
@@ -396,6 +468,9 @@ erDiagram
     string taxId
     string paymentTerms "DUE_ON_RECEIPT | NET_15 | ..."
     string rating "A | B | C | D (buy volume)"
+    string qbListId "QBWC linkage"
+    string qbEditSequence
+    datetime qbSyncedAt
     bool isActive
   }
   CustomerAddress {
@@ -423,15 +498,111 @@ erDiagram
     string soNumber "unique per tenant"
     string status "OPEN | PARTIAL | SHIPPED | CANCELLED"
     datetime orderDate
+    datetime requestedShipDate "null = unset"
+    datetime paidAt "null until paid"
+    datetime packedAt "null until packed"
   }
   SalesOrderLine {
     uuid id PK
     uuid salesOrderId FK
-    uuid itemId FK
+    string lineType "ITEM | CONTAINER"
+    uuid itemId FK "ITEM lines"
+    uuid productContainerId FK "CONTAINER lines"
     decimal quantityOrdered
     decimal unitPrice
     decimal quantityShipped
     int sortOrder
+    uuid containerId FK "packing plan (ITEM lines)"
+    decimal containerQuantity
+  }
+```
+
+## Shipments
+
+A `Shipment` is a first-class physical despatch against a sales order — its own
+number, carrier, and tracking. Partial fulfilment produces several shipments per
+order. Each `ShipmentLine` mirrors the SO line it fulfils and **snapshots
+`unitCost` at ship time** for COGS; the matching `SHIPMENT` ledger lines reduce
+stock alongside.
+
+```mermaid
+erDiagram
+  SalesOrder ||--o{ Shipment : "despatched as"
+  Shipment ||--o{ ShipmentLine : "has lines"
+  SalesOrderLine ||--o{ ShipmentLine : "fulfilled by"
+  InventoryItem ||--o{ ShipmentLine : "shipped as"
+  Container ||--o{ ShipmentLine : "shipped as"
+  User ||--o{ Shipment : "shipped by"
+
+  Shipment {
+    uuid id PK
+    uuid tenantId FK
+    uuid salesOrderId FK
+    string shipmentNumber "unique per tenant"
+    string carrier
+    string trackingNumber
+    uuid shippedById FK
+    datetime shippedAt
+  }
+  ShipmentLine {
+    uuid id PK
+    uuid tenantId FK
+    uuid shipmentId FK
+    uuid salesOrderLineId FK
+    string lineType "ITEM | CONTAINER"
+    uuid itemId FK
+    uuid containerId FK
+    decimal quantity
+    decimal unitCost "COGS per unit at ship time"
+    decimal value "COGS total"
+  }
+```
+
+## Containers (packaging)
+
+Packaging stock — drums, pails, jugs, cans, bottles, totes — that fragrance is
+packed into, and that can also be sold or ordered on its own. The
+`Container`/`ContainerStock`/`ContainerTxn` trio mirrors the
+item/stock/ledger split, but there is a **single on-hand bucket** (no WIP or QC
+staging) and quantities are whole counts. `capacityLb` is the nominal fill weight
+used to default packing counts.
+
+```mermaid
+erDiagram
+  Container ||--o| ContainerStock : "position"
+  Container ||--o{ ContainerTxn : "ledger lines"
+
+  Container {
+    uuid id PK
+    uuid tenantId FK
+    string sku "unique per tenant"
+    string name
+    string containerType "DRUM | PAIL | JUG | CAN | BOTTLE | TOTE | OTHER"
+    decimal capacityLb "nominal fill weight"
+    decimal standardCost
+    decimal reorderPoint "whole count; null = untracked"
+    bool active
+  }
+  ContainerStock {
+    uuid id PK
+    uuid tenantId FK
+    uuid containerId FK "unique (one per container)"
+    decimal quantity "whole count"
+    decimal avgCost "moving average"
+  }
+  ContainerTxn {
+    uuid id PK
+    uuid tenantId FK
+    uuid containerId FK
+    string type "ADJUSTMENT | CONSUME | SCRAP"
+    decimal quantity "signed: + in, - out"
+    decimal unitCost
+    decimal value "signed = qty * unitCost"
+    decimal balanceQty "on-hand after line"
+    decimal balanceAvgCost "moving avg after line"
+    string reason "scrap reason when type = SCRAP"
+    uuid operatorId
+    datetime occurredAt
   }
 ```
 
@@ -443,18 +614,24 @@ staging, are consumed from WIP, and output lands in FG-WIP before a separate
 pack-off step). `CompounderPour` is the append-only record of each dose an
 operator reports from the compounder dosing tool; every pour also posts a
 `CONSUME` ledger line. (Physical tables retain their original `ProductionRun`
-names via `@@map`.)
+names via `@@map`.) A work order may be linked to the sales order/line it
+fulfils (`salesOrderId` / `salesOrderLineId`; null for ad-hoc runs) and ordered
+in the scheduler queue via `queuePosition`. When the scheduler can't source a
+component, it raises a `PurchasingAlert` for purchasing to act on.
 
 ```mermaid
 erDiagram
   Formula ||--o{ ProductionWorkOrder : "drives"
   InventoryItem ||--o{ ProductionWorkOrder : "target of"
+  SalesOrder ||--o{ ProductionWorkOrder : "fulfilled by"
   ProductionWorkOrder ||--o{ ProductionWorkOrderLine : "has components"
   InventoryItem ||--o{ ProductionWorkOrderLine : "component of"
   ProductionWorkOrder ||--o{ CompounderPour : "poured into"
   ProductionWorkOrderLine ||--o{ CompounderPour : "doses"
   InventoryItem ||--o{ CompounderPour : "component poured"
   User ||--o{ CompounderPour : "operator"
+  ProductionWorkOrder ||--o{ PurchasingAlert : "shortage flagged"
+  InventoryItem ||--o{ PurchasingAlert : "short of"
 
   ProductionWorkOrder {
     uuid id PK
@@ -465,7 +642,10 @@ erDiagram
     decimal batchSize "in batchUnit"
     string batchUnit "LB | KG"
     decimal outputQty "target's UoM"
-    string status "PLANNED | STAGED | IN_PROGRESS | ON_HOLD | COMPLETED | CANCELLED"
+    string status "REQUESTED | QUEUED | PLANNED | STAGED | IN_PROGRESS | ON_HOLD | COMPLETED | CANCELLED"
+    uuid salesOrderId FK "null for ad-hoc"
+    uuid salesOrderLineId FK
+    int queuePosition "QUEUED only"
   }
   ProductionWorkOrderLine {
     uuid id PK
@@ -485,6 +665,16 @@ erDiagram
     decimal quantity "canonical pounds"
     uuid operatorId FK
     datetime occurredAt
+  }
+  PurchasingAlert {
+    uuid id PK
+    uuid tenantId FK
+    uuid itemId FK
+    uuid workOrderId FK "nullable"
+    decimal shortQty
+    string status "OPEN | RESOLVED"
+    uuid raisedById FK
+    datetime resolvedAt
   }
 ```
 
@@ -526,6 +716,41 @@ erDiagram
     decimal expectedQty "system snapshot"
     decimal countedQty
     bool counted
+  }
+```
+
+## Business configuration
+
+Tenant-tunable settings. `BusinessVariableValue` stores **only the overrides** of
+a code-defined variable catalog (working hours, default profit margin, pph per
+workstation, production efficiency, production cost factor); unset entries fall
+back to their catalog defaults. `operatorRole` is null for non-role-scoped
+variables, or one row per role for role-scoped ones. `CompanyHoliday` encodes
+closure days as recurrence rules so one row covers every year.
+
+```mermaid
+erDiagram
+  Tenant ||--o{ BusinessVariableValue : "overrides"
+  Tenant ||--o{ CompanyHoliday : "closes on"
+
+  BusinessVariableValue {
+    uuid id PK
+    uuid tenantId FK
+    string key "catalog key; unique per (tenant, key, role)"
+    string operatorRole "FLOOR | LAB | SAMPLE_LAB; null = global"
+    string value "text, validated by catalog type"
+  }
+  CompanyHoliday {
+    uuid id PK
+    uuid tenantId FK
+    string name
+    string ruleType "FIXED | NTH_WEEKDAY | EXPLICIT"
+    int month "FIXED, NTH_WEEKDAY"
+    int day "FIXED"
+    int weekday "0-6 (NTH_WEEKDAY)"
+    int nth "1-5 or -1=last (NTH_WEEKDAY)"
+    date date "EXPLICIT one-off"
+    bool active
   }
 ```
 
