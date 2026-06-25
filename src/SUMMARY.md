@@ -1,5 +1,9 @@
 # Summary
 
+# Guides
+
+- [FW3 Walkthrough](./walkthrough.md)
+
 # Projects
 
 - [FW Requests](./fw_requests.md)
